@@ -152,36 +152,43 @@ Solstice development follows a phased approach with clear milestones and gates. 
 ### Milestones
 
 **4.1 - Position Sizing** (Week 21-23)
-- [ ] Risk parameter framework
-- [ ] Position size calculation
-- [ ] Kelly criterion implementation
-- [ ] Risk budget allocation
-- **Dependencies**: 3.4
-- **Gate**: Position sizes reasonable and risk-aware
+- [x] Risk parameter framework
+- [x] Position size calculation
+- [x] Kelly criterion implementation (fractional Kelly, signal confidence
+      as win probability)
+- [x] Risk budget allocation
+- **Dependencies**: 3.4 ✅
+- **Gate**: Position sizes reasonable and risk-aware ✅ COMPLETE
 
 **4.2 - Risk Management** (Week 23-25)
-- [ ] Risk limit enforcement
-- [ ] Stop-loss mechanisms
-- [ ] Loss limits
-- [ ] Exposure constraints
-- **Dependencies**: 4.1, 3.4
-- **Gate**: Hard risk limits enforced
+- [x] Risk limit enforcement (position/exposure/concentration/order)
+- [x] Stop-loss mechanisms
+- [x] Loss limits (daily loss, with manual-reset-only circuit breaker)
+- [x] Exposure constraints
+- **Dependencies**: 4.1 ✅, 3.4 ✅
+- **Gate**: Hard risk limits enforced ✅ COMPLETE
 
 **4.3 - Execution Planning** (Week 25-27)
-- [ ] Execution planner
-- [ ] Order routing
-- [ ] Partial execution handling
-- [ ] Transaction builder integration
-- **Dependencies**: 2.3, 4.1
-- **Gate**: Can plan execution routes
+- [x] Execution planner (routes via solstice-dex's DexAggregator)
+- [x] Order routing
+- [ ] Partial execution handling (multi-leg/split routing — single-quote
+      planning only so far)
+- [ ] Transaction builder integration (awaits DEX swap-instruction
+      building, blocked per Phase 2.2/2.3 CHANGENLOG entries)
+- **Dependencies**: 2.3 (not done), 4.1 ✅ — proceeded on 4.1 only, same
+  reasoning as Phase 3.1's soft dependency on 2.3
+- **Gate**: Can plan execution routes ✅ PARTIAL (quote + risk-checked
+  plan; not yet wired to a submittable transaction)
 
 **4.4 - Order Management** (Week 27-29)
-- [ ] Order tracking
-- [ ] Fill monitoring
-- [ ] Partial execution handling
-- [ ] Order lifecycle
-- **Dependencies**: 4.3
-- **Gate**: Can monitor and track orders
+- [x] Order tracking
+- [x] Fill monitoring
+- [x] Partial execution handling (partial fills tracked; order-splitting
+      execution strategy itself is the 4.3 gap above)
+- [x] Order lifecycle
+- **Dependencies**: 4.3 ✅ (partial)
+- **Gate**: Can monitor and track orders ✅ COMPLETE (in-memory; no
+  persistence to solstice-storage yet)
 
 **Phase 4 Gate**: Can plan and execute trades with risk controls; backtesting shows valid trades.
 

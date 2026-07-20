@@ -357,6 +357,67 @@ cointegration/DEX gaps.
 
 ---
 
+## [0.1.0-alpha] - 2026-07-20 (Phase 4)
+
+### Phase 4.1 - Position Sizing ✅ COMPLETE
+
+New `solstice-execution` crate. `PositionSizer::calculate_size` uses
+fractional Kelly criterion (`f* = p - (1-p)/b`, clamped to `[0, 1]`,
+scaled by a configurable `kelly_fraction` for safety — full Kelly is
+aggressive and rarely appropriate) with the signal's `confidence` as win
+probability, then clamps the result against every hard limit: an
+explicit `suggested_size` hint on the signal, max position size/percent,
+and available capital. Never suggests a negative or over-bankroll size.
+
+### Phase 4.2 - Risk Management ✅ COMPLETE
+
+Direct implementation of `docs/RISK_MANAGEMENT.md`: `PositionLimits`,
+`DailyLossLimits`, `ExposureLimits`, `ConcentrationLimits`, `OrderLimits`
+as pure checks with no I/O or shared state, composed by
+`PreTradeRiskChecker::check_before_trade`. `RiskMonitor` tracks portfolio
+risk snapshots over time and trips a circuit breaker on daily-loss
+breach — per the spec's fail-safe philosophy, nothing in this crate
+resets it automatically; `reset_circuit_breaker` is the only way back,
+and it's on the caller to invoke it deliberately. `StopLossManager`
+flags long positions that have fallen past a configurable loss
+threshold (short-position stop logic is inverted and isn't implemented,
+since nothing in this workspace opens shorts yet).
+
+One deviation from the spec: `PreTradeRiskChecker` doesn't fetch a quote
+from a `DexAggregator` itself the way the spec's sketch does — the
+simulated slippage is passed in by the caller instead. Risk checks stay
+pure/synchronous; fetching a quote is an I/O concern that belongs to the
+execution planner, not the risk checker.
+
+### Phase 4.3 - Execution Planning ✅ (partial)
+
+`ExecutionPlanner::plan` extracts a signal's token pair (`Buy`/`Sell`
+only — `Close`/`Rebalance` signals don't concern a single pair the same
+way and have no plan through this path), fetches the best route via
+`solstice-dex`'s `DexAggregator`, estimates slippage, and runs
+`PreTradeRiskChecker` against it — returning an `ExecutionPlan` whose
+`approval` field records the outcome (a plan that fails risk checks is
+still `Ok`, not an `Err`, so callers can inspect/log why). Does not yet
+build a submittable transaction: that's blocked on the DEX
+swap-instruction gaps already noted in the Phase 2.2/2.3 entries above
+(Raydium/Orca instruction building deferred, OpenBook/Phoenix/Meteora
+not integrated), and multi-leg/split order routing isn't implemented.
+
+### Phase 4.4 - Order Management ✅ COMPLETE (in-memory)
+
+`OrderManager` tracks orders through `Submitted → PartiallyFilled →
+Filled` (or `→ Failed`/`Cancelled`), rejecting fills against terminal
+orders and rejecting submission of any plan whose `approval` wasn't
+`Approved` — an order should never exist for a trade the risk checker
+didn't clear. State lives in memory only; persistence to
+`solstice-storage`'s `trades`/`position_updates` tables is a follow-up.
+
+**Ready for**: closing the Phase 4.3 transaction-building gap (once a
+DEX swap-instruction path is available), wiring `OrderManager` to
+storage persistence, or moving to Phase 5+ (Jito/MEV, Simulation, APIs).
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started
