@@ -39,12 +39,12 @@ Solstice development follows a phased approach with clear milestones and gates. 
 - **Gate**: Can cache and manage market data ✅ PARTIAL COMPLETE
 
 **1.3 - Blockchain Integration** (Week 4-5)
-- [ ] Build RPC abstraction layer
-- [ ] Transaction builder implementation
-- [ ] Account state queries
-- [ ] Transaction simulation interface
-- **Dependencies**: 1.1
-- **Gate**: Can build, simulate, and submit transactions
+- [x] Build RPC abstraction layer (complete - SolanaRpcClient)
+- [x] Transaction builder implementation (complete)
+- [x] Account state queries (complete)
+- [x] Transaction simulation interface (complete)
+- **Dependencies**: 1.1 ✅
+- **Gate**: Can build, simulate, and submit transactions ✅ COMPLETE
 
 **1.4 - Storage Infrastructure** (Week 5-6)
 - [ ] PostgreSQL schema design
