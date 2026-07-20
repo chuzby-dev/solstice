@@ -1,8 +1,8 @@
 [workspace]
 members = [
     "crates/solstice-core",
-    "crates/solstice-market-data",
     "crates/solstice-blockchain",
+    "crates/solstice-market-data",
     "crates/solstice-dex",
     "crates/solstice-strategy",
     "crates/solstice-execution",

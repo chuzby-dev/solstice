@@ -1,0 +1,24 @@
+[package]
+name = "solstice-blockchain"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+description = "Solana blockchain integration and RPC abstraction layer"
+
+[dependencies]
+solstice-core = { path = "../solstice-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+solana-sdk = { workspace = true }
+solana-client = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }

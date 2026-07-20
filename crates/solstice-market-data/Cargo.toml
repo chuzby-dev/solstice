@@ -1,0 +1,24 @@
+[package]
+name = "solstice-market-data"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+description = "Market data ingestion, normalization, and caching"
+
+[dependencies]
+solstice-core = { path = "../solstice-core" }
+solstice-blockchain = { path = "../solstice-blockchain" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+solana-sdk = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
