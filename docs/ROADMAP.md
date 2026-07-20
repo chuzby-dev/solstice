@@ -1,0 +1,555 @@
+# Solstice Development Roadmap
+
+**Purpose**: Define development phases, milestones, and prioritization.
+
+**Scope**: Timeline, feature priorities, and dependency sequencing for implementation.
+
+**Status**: Draft  
+**Version**: 1.0.0-draft
+
+---
+
+## Overview
+
+Solstice development follows a phased approach with clear milestones and gates. Each phase completes before the next begins, ensuring solid foundation.
+
+---
+
+## Phase 1: Core Infrastructure (Months 1-2)
+
+**Goal**: Establish foundation for market data ingestion and blockchain interaction.
+
+### Milestones
+
+**1.1 - Workspace Setup & Core Types** (Week 1-2)
+- [ ] Create Rust workspace structure
+- [ ] Implement `solstice-core` crate with base types
+- [ ] Establish CI/CD pipeline
+- [ ] Setup logging infrastructure
+- **Dependencies**: Complete
+- **Gate**: Workspace compiles, tests pass
+
+**1.2 - Market Data Ingestion** (Week 3-4)
+- [ ] Implement Yellowstone gRPC adapter
+- [ ] Implement Solana RPC client
+- [ ] Build market data normalizer
+- [ ] Setup in-memory cache layer
+- **Dependencies**: 1.1
+- **Gate**: Can subscribe to market data and cache prices
+
+**1.3 - Blockchain Integration** (Week 4-5)
+- [ ] Build RPC abstraction layer
+- [ ] Transaction builder implementation
+- [ ] Account state queries
+- [ ] Transaction simulation interface
+- **Dependencies**: 1.1
+- **Gate**: Can build, simulate, and submit transactions
+
+**1.4 - Storage Infrastructure** (Week 5-6)
+- [ ] PostgreSQL schema design
+- [ ] TimescaleDB setup
+- [ ] Redis cache integration
+- [ ] Data access layer
+- **Dependencies**: 1.1
+- [ ] **Gate**: Can persist and query market data
+
+**Phase 1 Gate**: All core infrastructure working; simple integration tests passing.
+
+---
+
+## Phase 2: DEX Integration (Months 2-3)
+
+**Goal**: Integrate with major DEX protocols for quote and execution.
+
+### Milestones
+
+**2.1 - Jupiter Integration** (Week 7-9)
+- [ ] Jupiter API client
+- [ ] Quote fetching
+- [ ] Route finding
+- [ ] Swap instruction building
+- **Dependencies**: 1.2, 1.3
+- **Gate**: Can get best routes and build swap instructions
+
+**2.2 - Primary DEXes** (Week 9-10)
+- [ ] Raydium integration
+- [ ] Orca integration
+- [ ] OpenBook integration
+- [ ] Unified DEX interface
+- **Dependencies**: 2.1
+- **Gate**: Can get quotes from multiple DEXes
+
+**2.3 - Secondary DEXes** (Week 11-12)
+- [ ] Meteora integration
+- [ ] Phoenix integration
+- [ ] DEX aggregator logic
+- **Dependencies**: 2.1, 2.2
+- **Gate**: Full DEX coverage; can find optimal routing
+
+**Phase 2 Gate**: Can route trades through all major DEXes; slippage estimates accurate.
+
+---
+
+## Phase 3: Strategy Framework (Months 3-4)
+
+**Goal**: Implement strategy framework and core statistical arbitrage engine.
+
+### Milestones
+
+**3.1 - Strategy Framework** (Week 13-15)
+- [ ] Strategy trait and plugin system
+- [ ] Strategy loader and registry
+- [ ] Lifecycle management
+- [ ] Example dummy strategy
+- **Dependencies**: 1.1, 2.3
+- **Gate**: Can load and run a simple strategy
+
+**3.2 - Fair Value Engine** (Week 15-17)
+- [ ] Price aggregation logic
+- [ ] Fair value computation
+- [ ] Multi-source weighting
+- [ ] Time-decay adjustments
+- **Dependencies**: 3.1
+- **Gate**: Can compute fair values consistently
+
+**3.3 - Statistical Arbitrage** (Week 17-19)
+- [ ] Opportunity detection
+- [ ] Correlation analysis
+- [ ] Mean reversion signals
+- [ ] Signal scoring
+- **Dependencies**: 3.1, 3.2
+- **Gate**: Can identify profitable opportunities
+
+**3.4 - Portfolio Management** (Week 19-20)
+- [ ] Position tracking
+- [ ] Rebalancing logic
+- [ ] Correlation limits
+- [ ] Portfolio constraints
+- **Dependencies**: 3.1
+- **Gate**: Can manage multi-position portfolio
+
+**Phase 3 Gate**: Strategies can run in simulation and identify opportunities.
+
+---
+
+## Phase 4: Execution & Risk (Months 4-5)
+
+**Goal**: Implement execution engine and risk management framework.
+
+### Milestones
+
+**4.1 - Position Sizing** (Week 21-23)
+- [ ] Risk parameter framework
+- [ ] Position size calculation
+- [ ] Kelly criterion implementation
+- [ ] Risk budget allocation
+- **Dependencies**: 3.4
+- **Gate**: Position sizes reasonable and risk-aware
+
+**4.2 - Risk Management** (Week 23-25)
+- [ ] Risk limit enforcement
+- [ ] Stop-loss mechanisms
+- [ ] Loss limits
+- [ ] Exposure constraints
+- **Dependencies**: 4.1, 3.4
+- **Gate**: Hard risk limits enforced
+
+**4.3 - Execution Planning** (Week 25-27)
+- [ ] Execution planner
+- [ ] Order routing
+- [ ] Partial execution handling
+- [ ] Transaction builder integration
+- **Dependencies**: 2.3, 4.1
+- **Gate**: Can plan execution routes
+
+**4.4 - Order Management** (Week 27-29)
+- [ ] Order tracking
+- [ ] Fill monitoring
+- [ ] Partial execution handling
+- [ ] Order lifecycle
+- **Dependencies**: 4.3
+- **Gate**: Can monitor and track orders
+
+**Phase 4 Gate**: Can plan and execute trades with risk controls; backtesting shows valid trades.
+
+---
+
+## Phase 5: Jito & MEV Protection (Months 5-6)
+
+**Goal**: Implement MEV-protected execution via Jito.
+
+### Milestones
+
+**5.1 - Jito Integration** (Week 30-32)
+- [ ] Jito bundle client
+- [ ] Bundle construction
+- [ ] Bundle submission
+- [ ] Tip optimization
+- **Dependencies**: 4.3, 1.3
+- **Gate**: Can create and submit bundles
+
+**5.2 - MEV Protection** (Week 32-34)
+- [ ] Private RPC connectivity
+- [ ] Bundle redundancy
+- [ ] Fallback to direct submission
+- [ ] Fee optimization
+- **Dependencies**: 5.1
+- **Gate**: Bundles succeed at reasonable cost
+
+**5.3 - Settlement & Monitoring** (Week 34-35)
+- [ ] Confirmation monitoring
+- [ ] Failed bundle handling
+- [ ] Retry logic
+- [ ] Settlement recording
+- **Dependencies**: 5.1
+- **Gate**: Orders reliably settle; failures handled
+
+**Phase 5 Gate**: MEV-protected execution working; bundles succeed reliably.
+
+---
+
+## Phase 6: Simulation & Backtesting (Months 6-7)
+
+**Goal**: Implement complete simulation engine for strategy validation.
+
+### Milestones
+
+**6.1 - Simulation Engine** (Week 36-38)
+- [ ] Time-based event loop
+- [ ] Market data replay
+- [ ] Event ordering
+- [ ] State snapshot management
+- **Dependencies**: 3.4, 4.4, 1.4
+- **Gate**: Can replay historical data
+
+**6.2 - Order Simulation** (Week 38-40)
+- [ ] Simulated order execution
+- [ ] Slippage modeling
+- [ ] Partial fill simulation
+- [ ] Fee application
+- **Dependencies**: 6.1, 2.3
+- **Gate**: Simulated orders realistic
+
+**6.3 - Paper Trading Mode** (Week 40-42)
+- [ ] Live data + simulated execution
+- [ ] Real-time metrics
+- [ ] Seamless live transition
+- [ ] Order simulation in live feed
+- **Dependencies**: 6.1, 6.2
+- **Gate**: Can paper trade without risk
+
+**6.4 - Backtesting Engine** (Week 42-44)
+- [ ] Historical data loading
+- [ ] Performance calculation
+- [ ] Report generation
+- [ ] Parameter optimization framework
+- **Dependencies**: 6.1
+- **Gate**: Backtest results reproducible
+
+**Phase 6 Gate**: Can validate strategies in simulation before live trading.
+
+---
+
+## Phase 7: APIs & Observability (Months 7-8)
+
+**Goal**: Expose platform capabilities and operational visibility.
+
+### Milestones
+
+**7.1 - REST API** (Week 45-47)
+- [ ] Axum HTTP server
+- [ ] Status endpoints
+- [ ] Position endpoints
+- [ ] Configuration endpoints
+- [ ] OpenAPI documentation
+- **Dependencies**: 1.1, 4.4
+- **Gate**: REST API functional and documented
+
+**7.2 - WebSocket API** (Week 47-49)
+- [ ] WebSocket server
+- [ ] Market event subscriptions
+- [ ] Position update subscriptions
+- [ ] Real-time metrics
+- **Dependencies**: 7.1, 1.2
+- **Gate**: WebSocket connections work; events stream
+
+**7.3 - Monitoring & Metrics** (Week 49-51)
+- [ ] Prometheus metrics collection
+- [ ] Metric definitions
+- [ ] Grafana dashboard
+- [ ] Alert rules
+- **Dependencies**: 1.1
+- **Gate**: Comprehensive metrics; dashboards functional
+
+**7.4 - Logging Infrastructure** (Week 51-52)
+- [ ] Structured logging throughout
+- [ ] Log aggregation
+- [ ] Queryable logs
+- [ ] Debug output
+- **Dependencies**: 1.1
+- **Gate**: All events logged; searchable
+
+**Phase 7 Gate**: Platform fully observable and remotely controllable.
+
+---
+
+## Phase 8: Dashboard & UI (Months 8-9)
+
+**Goal**: React dashboard for monitoring and control.
+
+### Milestones
+
+**8.1 - Dashboard Foundation** (Week 53-55)
+- [ ] React + TypeScript setup
+- [ ] API client library
+- [ ] Layout components
+- [ ] Routing
+- **Dependencies**: 7.1, 7.2
+- **Gate**: Dashboard compiles and displays
+
+**8.2 - Core Pages** (Week 55-57)
+- [ ] Status page
+- [ ] Positions page
+- [ ] Trades page
+- [ ] Performance metrics page
+- **Dependencies**: 8.1
+- **Gate**: Core information visible
+
+**8.3 - Real-Time Updates** (Week 57-59)
+- [ ] WebSocket integration
+- [ ] Live position updates
+- [ ] Live trade stream
+- [ ] Live metrics
+- **Dependencies**: 8.1, 7.2
+- **Gate**: Dashboard updates in real-time
+
+**8.4 - Control Interface** (Week 59-61)
+- [ ] Configuration management
+- [ ] Strategy selection
+- [ ] Trading controls (start/stop)
+- [ ] Manual order submission
+- **Dependencies**: 8.3
+- **Gate**: Can control platform from dashboard
+
+**Phase 8 Gate**: Dashboard fully functional for monitoring and control.
+
+---
+
+## Phase 9: Testing & Hardening (Months 9-10)
+
+**Goal**: Comprehensive testing and production readiness.
+
+### Milestones
+
+**9.1 - Unit Tests** (Week 62-64)
+- [ ] 80%+ code coverage
+- [ ] Critical path tests
+- [ ] Edge case tests
+- **Dependencies**: All previous
+- **Gate**: Unit tests comprehensive
+
+**9.2 - Integration Tests** (Week 64-66)
+- [ ] Multi-crate tests
+- [ ] E2E workflows
+- [ ] Failure scenarios
+- [ ] Recovery procedures
+- **Dependencies**: 9.1
+- **Gate**: Integration tests pass
+
+**9.3 - Chaos Testing** (Week 66-68)
+- [ ] Network failure simulation
+- [ ] RPC node failures
+- [ ] Database unavailability
+- [ ] Concurrent failures
+- **Dependencies**: 9.2
+- **Gate**: Recovers from failures
+
+**9.4 - Performance Testing** (Week 68-70)
+- [ ] Load testing
+- [ ] Latency profiling
+- [ ] Memory profiling
+- [ ] Optimization
+- **Dependencies**: 9.2
+- **Gate**: Meets performance targets
+
+**Phase 9 Gate**: Production-ready code quality; comprehensive test coverage.
+
+---
+
+## Phase 10: Production Deployment (Months 10-11)
+
+**Goal**: Deploy to production and begin live trading.
+
+### Milestones
+
+**10.1 - Infrastructure** (Week 71-73)
+- [ ] PostgreSQL + TimescaleDB setup
+- [ ] Redis deployment
+- [ ] RPC nodes configured
+- [ ] Backup/recovery procedures
+- **Dependencies**: 9.4
+- **Gate**: Infrastructure ready
+
+**10.2 - Deployment Pipeline** (Week 73-75)
+- [ ] Docker containerization
+- [ ] CI/CD automation
+- [ ] Deployment scripts
+- [ ] Rollback procedures
+- **Dependencies**: 10.1
+- **Gate**: Automated deployment working
+
+**10.3 - Dry Run** (Week 75-77)
+- [ ] Testnet trading
+- [ ] Mainnet simulation (paper)
+- [ ] All systems exercised
+- [ ] Operator training
+- **Dependencies**: 10.2
+- **Gate**: Dry run succeeds
+
+**10.4 - Live Deployment** (Week 77-79)
+- [ ] Phased deployment
+- [ ] Small capital initially
+- [ ] Monitoring intensified
+- [ ] Rapid response team
+- **Dependencies**: 10.3
+- **Gate**: First trades executed
+
+**Phase 10 Gate**: Trading live with capital deployed.
+
+---
+
+## Phase 11: Optimization & Scaling (Months 11+)
+
+**Goal**: Improve performance and prepare for scaling.
+
+### Milestones
+
+**11.1 - Performance Optimization**
+- [ ] Profiling and optimization
+- [ ] Latency reduction
+- [ ] Throughput improvements
+- [ ] Resource efficiency
+
+**11.2 - Additional Strategies**
+- [ ] Develop new strategies
+- [ ] Strategy marketplace
+- [ ] Community strategies
+
+**11.3 - Cross-Chain**
+- [ ] Ethereum support
+- [ ] Polygon support
+- [ ] Other chains
+
+**11.4 - Advanced Features**
+- [ ] Machine learning strategies
+- [ ] Autonomous parameter tuning
+- [ ] Multi-account support
+- [ ] Advanced analytics
+
+---
+
+## Timeline Summary
+
+| Phase | Duration | Months | Key Deliverable |
+|-------|----------|--------|-----------------|
+| 1 | 6 weeks | 1-2 | Infrastructure working |
+| 2 | 6 weeks | 2-3 | DEX integration complete |
+| 3 | 8 weeks | 3-4 | Strategy framework functional |
+| 4 | 9 weeks | 4-5 | Execution engine ready |
+| 5 | 6 weeks | 5-6 | MEV protection working |
+| 6 | 9 weeks | 6-7 | Simulation engine complete |
+| 7 | 8 weeks | 7-8 | APIs operational |
+| 8 | 9 weeks | 8-9 | Dashboard functional |
+| 9 | 9 weeks | 9-10 | Production quality |
+| 10 | 9 weeks | 10-11 | Trading live |
+| **Total** | **79 weeks** | **~18 months** | **Production platform** |
+
+---
+
+## Dependencies & Gating
+
+Each phase depends on previous phases:
+
+```
+Phase 1 (Core Infrastructure)
+    ↓
+Phase 2 (DEX Integration)
+    ↓
+Phase 3 (Strategy Framework)
+    ↓
+Phase 4 (Execution & Risk)
+    ├─→ Phase 5 (Jito & MEV)
+    ├─→ Phase 6 (Simulation)
+    └─→ Phase 7 (APIs) ← Phase 8 (Dashboard)
+    ↓
+Phase 9 (Testing & Hardening)
+    ↓
+Phase 10 (Production Deployment)
+    ↓
+Phase 11 (Scaling & Optimization)
+```
+
+No phase proceeds to production until previous phase gate passes.
+
+---
+
+## Risk & Mitigation
+
+### Key Risks
+
+1. **Solana Network Changes**: RPC or protocol changes
+   - Mitigation: Rapid response team, multiple RPC providers
+
+2. **DEX Protocol Changes**: LP concentrations, fees
+   - Mitigation: Flexible routing, strategy adjustment
+
+3. **Yellowstone Unavailability**: gRPC endpoint down
+   - Mitigation: Fallback to RPC polling
+
+4. **Jito Infrastructure Issues**: Bundle failures
+   - Mitigation: Fallback to direct submission
+
+5. **Capital Loss in Live Trading**: Bugs or edge cases
+   - Mitigation: Paper trading extensive, small initial capital
+
+### Mitigation Strategy
+
+- Extensive paper trading before live (Phase 6-9)
+- Small initial capital deployment
+- Intensive monitoring and rapid response
+- Regular strategy backtesting
+- Disaster recovery procedures
+
+---
+
+## Success Metrics
+
+### Phase Completion Criteria
+
+Each phase has specific pass/fail criteria:
+- Functionality: All features work as designed
+- Quality: Tests pass, code reviewed
+- Performance: Meets latency/throughput targets
+- Reliability: Handles failure modes gracefully
+
+### Production Success Metrics
+
+- Consistent positive alpha generation
+- Risk management effective (losses limited)
+- 99.9% uptime
+- Sub-second market latency
+- 95%+ execution success rate
+
+---
+
+## Related Documents
+
+- [ARCHITECTURE.md](./ARCHITECTURE.md) - System architecture
+- [TESTING_STRATEGY.md](./TESTING_STRATEGY.md) - Testing approach
+- [DEPLOYMENT.md](./DEPLOYMENT.md) - Production deployment
+- [OPERATIONAL_RUNBOOKS.md](./OPERATIONAL_RUNBOOKS.md) - Operations procedures
+
+---
+
+**Status**: Specification phase (Phase 0-1)  
+**Current Date**: 2026-07-20
