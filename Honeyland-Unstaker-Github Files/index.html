@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#12100D" />
+<title>Comb — Honeyland Recovery</title>
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="icon.svg" />
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500;700&display=swap');
+  :root{
+    --bg:#12100D; --surface:#1C1811; --surface-2:#241F16; --line:#34301F;
+    --amber:#E8A33D; --amber-dim:#7A5A24; --thawed:#6FAE8A; --danger:#C1543F;
+    --purple:#a78bda; --text:#F2EBDD; --text-dim:#948A73; --mono:'JetBrains Mono',monospace;
+    --display:'Space Grotesk',sans-serif; --body:'IBM Plex Sans',sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;background:var(--bg);color:var(--text);font-family:var(--body);}
+  body{padding-bottom:60px;}
+  .topbar{position:sticky;top:0;z-index:10;background:linear-gradient(180deg,var(--bg) 75%,transparent);padding:16px 16px 10px;}
+  .brand{display:flex;align-items:baseline;gap:10px;}
+  .brand .mark{font-family:var(--display);font-weight:700;font-size:22px;letter-spacing:-.02em;}
+  .brand .sub{font-family:var(--mono);font-size:10.5px;color:var(--text-dim);}
+  main{padding:6px 14px 14px;max-width:720px;margin:0 auto;}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:3px;margin-bottom:12px;overflow:hidden;}
+  .card-head{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;cursor:pointer;user-select:none;}
+  .card-head .title{font-family:var(--display);font-weight:700;font-size:14px;}
+  .card-head .status{font-family:var(--mono);font-size:10px;color:var(--text-dim);text-transform:uppercase;}
+  .card-head .status.ok{color:var(--thawed);}
+  .card-head .status.err{color:var(--danger);}
+  .chev{font-family:var(--mono);color:var(--text-dim);font-size:12px;transition:transform .2s;}
+  .card.open .chev{transform:rotate(90deg);}
+  .card-body{display:none;padding:0 14px 14px;}
+  .card.open .card-body{display:block;}
+  p.help{color:var(--text-dim);font-size:12.5px;line-height:1.5;margin:0 0 10px;}
+  label{display:block;font-family:var(--mono);font-size:9.5px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;margin:8px 0 4px;}
+  input[type=text],input[type=password]{width:100%;background:var(--surface-2);border:1px solid var(--line);color:var(--text);font-family:var(--mono);font-size:12px;padding:8px 9px;border-radius:2px;}
+  input:focus{outline:2px solid var(--amber);outline-offset:1px;}
+  button.action{font-family:var(--display);font-weight:700;font-size:12.5px;background:var(--amber);color:#1a1408;border:none;border-radius:2px;padding:10px 14px;margin-top:10px;cursor:pointer;width:100%;}
+  button.action.secondary{background:transparent;border:1px solid var(--amber);color:var(--amber);}
+  button.action.ghost{background:transparent;border:1px solid var(--line);color:var(--text-dim);}
+  button.action.small{width:auto;padding:7px 11px;font-size:11px;margin:4px 4px 0 0;display:inline-block;}
+  button.action:disabled{opacity:.35;cursor:not-allowed;}
+  .row{display:flex;gap:8px;}
+  .row>*{flex:1;}
+  .out{font-family:var(--mono);font-size:11px;white-space:pre-wrap;word-break:break-all;background:#0E0C08;border:1px solid var(--line);border-radius:2px;padding:9px;margin-top:8px;max-height:280px;overflow:auto;color:#C9BE9F;}
+  .out .g{color:var(--thawed);} .out .r{color:var(--danger);} .out .a{color:var(--amber);}
+  .warn{background:#241a12;border:1px solid var(--amber-dim);color:#d8b276;font-size:11.5px;padding:9px;border-radius:2px;margin-top:8px;line-height:1.5;}
+
+  .legend{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px;font-family:var(--mono);font-size:10px;}
+  .legend span{padding:3px 7px;border-radius:2px;}
+
+  .nft-table{width:100%;border-collapse:collapse;font-size:11.5px;}
+  .nft-table th{text-align:left;font-family:var(--mono);font-size:9.5px;color:var(--text-dim);text-transform:uppercase;padding:6px 4px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--surface);}
+  .nft-table td{padding:6px 4px;border-bottom:1px solid var(--line);vertical-align:middle;}
+  .nft-table tr.selected{background:var(--surface-2);}
+  .nft-table tr.disabled-row{opacity:.45;}
+  .badge{font-family:var(--mono);font-size:9px;padding:2px 5px;border-radius:2px;text-transform:uppercase;white-space:nowrap;}
+  .badge.core_recoverable{background:var(--amber-dim);color:#f0c98a;}
+  .badge.core_asset_known_pool{background:#2f3d2a;color:#a9d68f;}
+  .badge.legacy_dead{background:#3a1f1f;color:#d18888;}
+  .badge.core_asset_other_pool{background:#2a2440;color:#b3a7e8;}
+  .badge.compressed{background:var(--line);color:var(--text-dim);}
+  .badge.unclassified{background:var(--line);color:var(--text-dim);}
+  .row-status{font-family:var(--mono);font-size:10px;color:var(--text-dim);}
+  .row-status.sent{color:var(--thawed);}
+  .row-status.error{color:var(--danger);}
+  .row-status.pending{color:var(--amber);}
+  .table-wrap{max-height:420px;overflow:auto;border:1px solid var(--line);border-radius:2px;}
+  .toolbar{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0;align-items:center;}
+  .count-pill{font-family:var(--mono);font-size:10.5px;color:var(--text-dim);margin-left:auto;}
+  footer{text-align:center;color:var(--text-dim);font-family:var(--mono);font-size:10px;padding:16px 14px 0;}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">
+    <span class="mark">Comb</span>
+    <span class="sub">Honeyland Recovery — v2</span>
+  </div>
+</div>
+
+<main>
+  <div class="warn" style="margin-bottom:14px;font-size:12.5px;border-color:var(--amber);line-height:1.6;">
+    <strong>Unofficial, community-built tool.</strong> Not affiliated with, endorsed by, or supported by Honeyland or its team. Provided as-is, with no warranty of any kind. Everything here runs entirely in your own browser — your private key or wallet connection is never sent anywhere. You are solely responsible for reviewing what this does and for any transactions you approve. The creator(s) accept no liability for any loss of funds, NFTs, or other damages arising from use of this tool. Use at your own risk.
+  </div>
+
+  <div class="card open" id="card-config">
+    <div class="card-head" onclick="toggleCard('card-config')"><span class="title">1 · Connection</span><span class="chev">▸</span></div>
+    <div class="card-body">
+      <p class="help">Private key signing is the proven-reliable method used for every real recovery so far. Wallet connect is available too, but hasn't been as thoroughly tested against these specific programs.</p>
+
+      <label>RPC endpoint (Helius required for scanning)</label>
+      <input type="text" id="rpc" placeholder="https://mainnet.helius-rpc.com/?api-key=..." />
+      <p class="help" style="margin-top:4px;">
+        Don't have one? Free, takes under a minute:
+        <a href="https://www.helius.dev" target="_blank" rel="noopener" style="color:var(--amber);">helius.dev</a>
+        → sign up (email only, no card) → dashboard shows your RPC URL with the key already in it → copy the whole thing here.
+      </p>
+
+      <label>Private key (base58) — recommended</label>
+      <input type="password" id="privkey" placeholder="base58 secret key" />
+      <div class="warn">Used only in your browser's memory to sign locally — never transmitted anywhere.</div>
+      <button class="action" onclick="loadPrivateKey()">Use this key</button>
+
+      <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:10px;">
+        <label>— or — connect wallet (less tested for these programs)</label>
+        <button class="action secondary" onclick="connectWallet()">Connect Solflare / Phantom</button>
+        <button class="action ghost" onclick="disconnectWallet()">Disconnect</button>
+      </div>
+
+      <div class="out" id="wallet-status" style="display:none"></div>
+      <label>Active wallet</label>
+      <input type="text" id="walletAddr" readonly />
+    </div>
+  </div>
+
+  <div class="card" id="card-scan">
+    <div class="card-head" onclick="toggleCard('card-scan')"><span class="title">2 · Scan for frozen NFTs</span><span class="status" id="status-scan">not run</span></div>
+    <div class="card-body">
+      <p class="help">Classifies every frozen NFT by which real on-chain mechanism holds it. Only two categories are currently actionable — the rest are shown for visibility but can't be processed yet.</p>
+      <button class="action" onclick="scanWallet()">Scan wallet</button>
+      <div class="out" id="scan-log" style="display:none"></div>
+    </div>
+  </div>
+
+  <div class="card" id="card-list">
+    <div class="card-head" onclick="toggleCard('card-list')"><span class="title">3 · Select &amp; unfreeze</span><span class="status" id="status-list"></span></div>
+    <div class="card-body">
+      <div class="legend">
+        <span class="badge core_recoverable">core</span>
+        <span class="badge core_asset_known_pool">generations</span>
+        <span class="badge legacy_dead">dead (no action)</span>
+        <span class="badge core_asset_other_pool">unidentified</span>
+        <span class="badge compressed">compressed (unsupported)</span>
+      </div>
+      <div class="toolbar">
+        <button class="action small" onclick="selectAllActionable()">Select all recoverable</button>
+        <button class="action small" onclick="selectAll(false)">Select none</button>
+        <button class="action small" onclick="selectByCategory('core_recoverable')">All Core</button>
+        <button class="action small" onclick="selectByCategory('core_asset_known_pool')">All Generations</button>
+        <span class="count-pill" id="count-pill">0 selected</span>
+      </div>
+      <div class="table-wrap">
+        <table class="nft-table">
+          <thead><tr><th></th><th>Name</th><th>Category</th><th>Status</th></tr></thead>
+          <tbody id="nft-tbody"></tbody>
+        </table>
+      </div>
+      <button class="action" id="unstake-btn" onclick="runBatch()" disabled>Unfreeze selected</button>
+      <div class="out" id="batch-log" style="display:none"></div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  Honeyland Core (classic + Generations/mpl-core), client-side signing only.
+  <div style="margin-top:10px;">
+    Found this useful? Donations welcome, never required:<br/>
+    <span id="donate-addr" style="font-family:var(--mono);color:var(--amber);word-break:break-all;">6acRcA8VC66QA7kzmjQE7ZnhUT9ijzw9d8akiXWmwWNY</span>
+    <br/>
+    <button class="action small" style="margin-top:6px;" onclick="copyDonateAddress()">Copy address</button>
+  </div>
+</footer>
+<script>
+function copyDonateAddress(){
+  const addr = document.getElementById('donate-addr').textContent;
+  navigator.clipboard.writeText(addr).then(() => {
+    const btn = event.target;
+    const original = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = original; }, 1500);
+  });
+}
+</script>
+
+<script src="https://unpkg.com/@solana/web3.js@1.95.3/lib/index.iife.js"></script>
+<script>
+const { PublicKey, Transaction, TransactionInstruction, Keypair } = solanaWeb3;
+
+const PROGRAM_CORE = new PublicKey("HLCorec4bsTSiyzskDuAqrqD5NXDZeLhdvWqs7wjWRx5");
+const PROGRAM_LEGACY_ID = "D7scofMhczWugX7WZPXSP3YjjSyDijEULpwQdraVj54q";
+const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+const METADATA_PROGRAM_ID = new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
+const METAPLEX_CORE_PROGRAM = new PublicKey("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
+const SYSTEM_PROGRAM = new PublicKey("11111111111111111111111111111111");
+const NOOP_PROGRAM = new PublicKey("noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV");
+const POOL_CORE = new PublicKey("4YSH4QNLjdpbDNWz6eJmT3J8kATvAWTrRMwpfE9zCDff");
+
+const DISC_UNFREEZE_NFT = hexToBytes("1437613bfba77520");
+const DISC_UNFREEZE_NFT_CORE = hexToBytes("e17b0dcf7dec533e");
+
+function hexToBytes(hex){ const out=new Uint8Array(hex.length/2); for(let i=0;i<hex.length;i+=2) out[i/2]=parseInt(hex.substr(i,2),16); return out; }
+const B58="123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+function b58decode(str){ let bytes=[0]; for(const c of str){ const val=B58.indexOf(c); if(val===-1) throw new Error('bad base58'); let carry=val; for(let j=0;j<bytes.length;j++){carry+=bytes[j]*58;bytes[j]=carry&0xff;carry>>=8;} while(carry>0){bytes.push(carry&0xff);carry>>=8;} } for(const c of str){ if(c==='1') bytes.push(0); else break; } return new Uint8Array(bytes.reverse()); }
+
+let state = { walletPubkey:null, signMode:null, keypair:null, provider:null, items:[] };
+
+function toggleCard(id){ document.getElementById(id).classList.toggle('open'); }
+function setStatus(id,text,cls){ const el=document.getElementById(id); el.textContent=text; el.className='status'+(cls?' '+cls:''); }
+function log(id,html,append){ const el=document.getElementById(id); el.style.display='block'; el.innerHTML = append ? el.innerHTML+html : html; el.scrollTop = el.scrollHeight; }
+
+async function rpc(method, params){
+  const url = document.getElementById('rpc').value.trim();
+  if(!url) throw new Error('Set an RPC endpoint first.');
+  const res = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({jsonrpc:'2.0',id:1,method,params}) });
+  const json = await res.json();
+  if(json.error) throw new Error(JSON.stringify(json.error));
+  return json.result;
+}
+
+async function connectWallet(){
+  const provider = window.solflare || window.solana;
+  const box = document.getElementById('wallet-status');
+  box.style.display='block';
+  if(!provider){
+    box.innerHTML = 'No injected wallet found. Open this page inside Solflare or Phantom\'s built-in browser tab.';
+    return;
+  }
+  try{
+    const resp = await provider.connect();
+    state.provider = provider;
+    state.signMode = 'wallet';
+    state.walletPubkey = resp.publicKey || provider.publicKey;
+    document.getElementById('walletAddr').value = state.walletPubkey.toString();
+    box.innerHTML = `connected: <span class="g">${state.walletPubkey.toString()}</span>`;
+
+    // Listen for account switches made inside the wallet extension itself.
+    if(provider.on){
+      provider.on('accountChanged', (publicKey) => {
+        if(publicKey){
+          state.walletPubkey = publicKey;
+          document.getElementById('walletAddr').value = publicKey.toString();
+          box.innerHTML = `switched to: <span class="g">${publicKey.toString()}</span> - rescan to refresh the NFT list`;
+          state.items = [];
+          renderTable();
+          setStatus('status-scan', 'account changed - rescan', 'err');
+        } else {
+          // Some wallets pass null/undefined when the user locks or disconnects from their side.
+          disconnectWallet();
+        }
+      });
+    }
+  }catch(e){
+    box.innerHTML = `<span class="r">${e.message}</span>`;
+  }
+}
+
+async function disconnectWallet(){
+  const box = document.getElementById('wallet-status');
+  try{
+    if(state.provider && state.provider.disconnect) await state.provider.disconnect();
+  }catch(e){ /* ignore - still clear local state below */ }
+  state.provider = null;
+  state.walletPubkey = null;
+  state.signMode = null;
+  state.items = [];
+  document.getElementById('walletAddr').value = '';
+  box.style.display='block';
+  box.innerHTML = 'disconnected.';
+  renderTable();
+  setStatus('status-scan', 'not run');
+}
+
+function loadPrivateKey(){
+  const secret = document.getElementById('privkey').value.trim();
+  const box = document.getElementById('wallet-status');
+  box.style.display='block';
+  try{
+    const arr = secret.startsWith('[') ? Uint8Array.from(JSON.parse(secret)) : b58decode(secret);
+    const kp = Keypair.fromSecretKey(arr);
+    state.keypair = kp;
+    state.signMode = 'privatekey';
+    state.walletPubkey = kp.publicKey;
+    document.getElementById('walletAddr').value = kp.publicKey.toString();
+    box.innerHTML = `using local key for: <span class="g">${kp.publicKey.toString()}</span>`;
+  }catch(e){
+    box.innerHTML = `<span class="r">invalid key: ${e.message}</span>`;
+  }
+}
+
+function metadataPda(mint){
+  const [pda] = PublicKey.findProgramAddressSync([new TextEncoder().encode('metadata'), METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer()], METADATA_PROGRAM_ID);
+  return pda;
+}
+function editionPda(mint){
+  const [pda] = PublicKey.findProgramAddressSync([new TextEncoder().encode('metadata'), METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer(), new TextEncoder().encode('edition')], METADATA_PROGRAM_ID);
+  return pda;
+}
+
+async function scanWallet(){
+  if(!state.walletPubkey){ setStatus('status-scan','connect wallet first','err'); return; }
+  setStatus('status-scan','scanning...');
+  log('scan-log','', false);
+
+  try{
+    let page=1, allAssets=[];
+    while(true){
+      const result = await rpc('getAssetsByOwner', { ownerAddress: state.walletPubkey.toString(), page, limit: 1000 });
+      allAssets.push(...(result.items||[]));
+      log('scan-log', `page ${page}: ${result.items.length} assets\n`, true);
+      if(result.items.length < 1000) break;
+      page++;
+    }
+
+    const frozen = allAssets.filter(a => a.ownership?.frozen === true);
+    log('scan-log', `\nFrozen total: ${frozen.length}\n`, true);
+
+    const coreAssets = frozen.filter(a => a.interface === 'MplCoreAsset');
+    const classicAssets = frozen.filter(a => a.interface !== 'MplCoreAsset' && !a.compression?.compressed && a.token_info?.associated_token_address);
+    const compressedAssets = frozen.filter(a => a.compression?.compressed === true);
+    const leftover = frozen.filter(a => a.interface !== 'MplCoreAsset' && !a.compression?.compressed && !a.token_info?.associated_token_address);
+
+    const items = [];
+
+    for(const a of coreAssets){
+      const authority = a.plugins?.freeze_delegate?.authority?.address;
+      items.push({
+        mint: a.id,
+        name: a.content?.metadata?.name || a.id.slice(0,8),
+        category: authority === POOL_CORE.toString() ? 'core_asset_known_pool' : 'core_asset_other_pool',
+        collection: (a.grouping||[]).find(g=>g.group_key==='collection')?.group_value,
+      });
+    }
+
+    log('scan-log', `Classifying ${classicAssets.length} classic-token assets...\n`, true);
+    const chunks = [];
+    for(let i=0;i<classicAssets.length;i+=90) chunks.push(classicAssets.slice(i,i+90));
+
+    for(const chunk of chunks){
+      const tokenAddrs = chunk.map(a => a.token_info.associated_token_address);
+      const infos = await rpc('getMultipleAccounts', [tokenAddrs, {encoding:'jsonParsed'}]);
+      const delegates = infos.value.map(info => info?.data?.parsed?.info?.delegate || null);
+
+      const validDelegates = delegates.filter(Boolean);
+      let ownerMap = {};
+      if(validDelegates.length > 0){
+        const delegateInfos = await rpc('getMultipleAccounts', [validDelegates, {encoding:'base64'}]);
+        let vi=0;
+        delegates.forEach(d => { if(d){ ownerMap[d] = delegateInfos.value[vi]?.owner; vi++; } });
+      }
+
+      chunk.forEach((a, idx) => {
+        const delegate = delegates[idx];
+        const owner = delegate ? ownerMap[delegate] : null;
+        let category = 'unclassified';
+        if(owner === METADATA_PROGRAM_ID.toString()) category = 'core_recoverable';
+        else if(owner === PROGRAM_LEGACY_ID) category = 'legacy_dead';
+        items.push({
+          mint: a.id,
+          name: a.content?.metadata?.name || a.id.slice(0,8),
+          category,
+          tokenAccount: a.token_info.associated_token_address,
+        });
+      });
+      log('scan-log', '.', true);
+    }
+
+    for(const a of compressedAssets){
+      items.push({ mint: a.id, name: a.content?.metadata?.name || a.id.slice(0,8), category: 'compressed' });
+    }
+    for(const a of leftover){
+      items.push({ mint: a.id, name: a.content?.metadata?.name || a.id.slice(0,8), category: 'unclassified' });
+    }
+
+    state.items = items.map((it,i) => ({ ...it, id:i, selected:false, status:'idle' }));
+
+    const counts = {};
+    items.forEach(it => counts[it.category] = (counts[it.category]||0)+1);
+    log('scan-log', `\n\nBreakdown:\n${Object.entries(counts).map(([k,v])=>`  ${k}: ${v}`).join('\n')}`, true);
+
+    renderTable();
+    setStatus('status-scan', `${items.length} found`, 'ok');
+    document.getElementById('card-list').classList.add('open');
+    setStatus('status-list', `${items.length} items`);
+  }catch(e){
+    log('scan-log', `\n<span class="r">${e.message}</span>`, true);
+    setStatus('status-scan','error','err');
+  }
+}
+
+const ACTIONABLE = ['core_recoverable', 'core_asset_known_pool'];
+
+function renderTable(){
+  const tbody = document.getElementById('nft-tbody');
+  tbody.innerHTML='';
+  state.items.forEach(item => {
+    const actionable = ACTIONABLE.includes(item.category);
+    const tr = document.createElement('tr');
+    tr.id = 'row-'+item.id;
+    if(!actionable) tr.classList.add('disabled-row');
+    tr.innerHTML = `
+      <td><input type="checkbox" onchange="toggleSelect(${item.id})" ${item.selected?'checked':''} ${actionable?'':'disabled'}></td>
+      <td>${item.name}</td>
+      <td><span class="badge ${item.category}">${item.category.replace(/_/g,' ')}</span></td>
+      <td class="row-status" id="rowstatus-${item.id}">${item.status}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+  updateCount();
+}
+function toggleSelect(id){ const item = state.items.find(i=>i.id===id); item.selected = !item.selected; document.getElementById('row-'+id).classList.toggle('selected', item.selected); updateCount(); }
+function selectAll(val){ state.items.forEach(i => { if(ACTIONABLE.includes(i.category)) i.selected = val; }); renderTable(); }
+function selectAllActionable(){ selectAll(true); }
+function selectByCategory(category){ state.items.forEach(i => { i.selected = i.category === category; }); renderTable(); }
+function updateCount(){
+  const n = state.items.filter(i=>i.selected).length;
+  document.getElementById('count-pill').textContent = `${n} selected`;
+  document.getElementById('unstake-btn').disabled = n===0;
+}
+
+function buildInstruction(item, wallet){
+  const mint = new PublicKey(item.mint);
+
+  if(item.category === 'core_recoverable'){
+    const tokenAccount = new PublicKey(item.tokenAccount);
+    const metadata = metadataPda(mint);
+    const edition = editionPda(mint);
+    const keys = [
+      {pubkey:POOL_CORE, isSigner:false, isWritable:true},
+      {pubkey:wallet, isSigner:true, isWritable:false},
+      {pubkey:metadata, isSigner:false, isWritable:true},
+      {pubkey:edition, isSigner:false, isWritable:true},
+      {pubkey:tokenAccount, isSigner:false, isWritable:true},
+      {pubkey:mint, isSigner:false, isWritable:true},
+      {pubkey:TOKEN_PROGRAM_ID, isSigner:false, isWritable:false},
+      {pubkey:METADATA_PROGRAM_ID, isSigner:false, isWritable:false},
+    ];
+    return new TransactionInstruction({ programId: PROGRAM_CORE, keys, data: DISC_UNFREEZE_NFT });
+  }
+
+  if(item.category === 'core_asset_known_pool'){
+    const collection = new PublicKey(item.collection);
+    const keys = [
+      {pubkey:POOL_CORE, isSigner:false, isWritable:true},
+      {pubkey:wallet, isSigner:true, isWritable:false},
+      {pubkey:mint, isSigner:false, isWritable:true},
+      {pubkey:collection, isSigner:false, isWritable:true},
+      {pubkey:SYSTEM_PROGRAM, isSigner:false, isWritable:false},
+      {pubkey:NOOP_PROGRAM, isSigner:false, isWritable:false},
+      {pubkey:METAPLEX_CORE_PROGRAM, isSigner:false, isWritable:false},
+    ];
+    return new TransactionInstruction({ programId: PROGRAM_CORE, keys, data: DISC_UNFREEZE_NFT_CORE });
+  }
+
+  throw new Error('Category "' + item.category + '" is not actionable.');
+}
+
+async function sendOne(item){
+  const wallet = state.walletPubkey;
+  const ix = buildInstruction(item, wallet);
+  const tx = new Transaction().add(ix);
+  tx.feePayer = wallet;
+  const { blockhash } = await rpc('getLatestBlockhash', [{commitment:'confirmed'}]).then(r=>r.value||r);
+  tx.recentBlockhash = blockhash;
+
+  let signature;
+  if(state.signMode === 'privatekey'){
+    tx.sign(state.keypair);
+    const wireTx = tx.serialize().toString('base64');
+    signature = await rpc('sendTransaction', [wireTx, {encoding:'base64', skipPreflight:true, preflightCommitment:'confirmed'}]);
+  } else {
+    const signed = await state.provider.signTransaction(tx);
+    const wireTx = signed.serialize().toString('base64');
+    signature = await rpc('sendTransaction', [wireTx, {encoding:'base64', skipPreflight:true, preflightCommitment:'confirmed'}]);
+  }
+
+  for(let attempt=0; attempt<30; attempt++){
+    await new Promise(r=>setTimeout(r,1000));
+    const statuses = await rpc('getSignatureStatuses', [[signature]]);
+    const st = statuses.value[0];
+    if(st && (st.confirmationStatus==='confirmed' || st.confirmationStatus==='finalized')){
+      if(st.err) throw new Error('on-chain failure: '+JSON.stringify(st.err));
+      return signature;
+    }
+  }
+  throw new Error('confirmation timed out - check manually: '+signature);
+}
+
+async function runBatch(){
+  const selected = state.items.filter(i=>i.selected);
+  if(selected.length===0) return;
+  document.getElementById('unstake-btn').disabled = true;
+  log('batch-log','', false);
+
+  let done=0, failed=0;
+  for(const item of selected){
+    const rowEl = document.getElementById('rowstatus-'+item.id);
+    rowEl.textContent = 'sending...'; rowEl.className='row-status pending';
+    log('batch-log', `${item.name}: sending...\n`, true);
+    try{
+      const sig = await sendOne(item);
+      rowEl.textContent = 'sent'; rowEl.className='row-status sent';
+      log('batch-log', `${item.name}: <span class="g">confirmed</span> ${sig.slice(0,20)}...\n`, true);
+      done++;
+    }catch(e){
+      rowEl.textContent = 'failed'; rowEl.className='row-status error';
+      log('batch-log', `${item.name}: <span class="r">${e.message}</span>\n`, true);
+      failed++;
+    }
+    await new Promise(r=>setTimeout(r,600));
+  }
+  log('batch-log', `\n--- done: ${done}  failed: ${failed} ---`, true);
+  document.getElementById('unstake-btn').disabled = false;
+}
+
+if ('serviceWorker' in navigator && location.protocol === 'https:'){
+  navigator.serviceWorker.register('sw.js').catch(()=>{});
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s localhost:4000/api/health)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" localhost:5173)",
+      "Bash(echo \"exit:$?\")",
+      "Bash(git init *)",
+      "Bash(git config *)",
+      "Bash(gh auth *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
+    ]
+  }
+}

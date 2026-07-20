@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#12100D" />
+<title>Comb — Burn Generations</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500;700&display=swap');
+  :root{
+    --bg:#12100D; --surface:#1C1811; --surface-2:#241F16; --line:#34301F;
+    --amber:#E8A33D; --amber-dim:#7A5A24; --thawed:#6FAE8A; --danger:#C1543F;
+    --text:#F2EBDD; --text-dim:#948A73; --mono:'JetBrains Mono',monospace;
+    --display:'Space Grotesk',sans-serif; --body:'IBM Plex Sans',sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;background:var(--bg);color:var(--text);font-family:var(--body);}
+  body{padding-bottom:60px;}
+  .topbar{position:sticky;top:0;z-index:10;background:linear-gradient(180deg,var(--bg) 75%,transparent);padding:16px 16px 10px;}
+  .brand{display:flex;align-items:baseline;gap:10px;}
+  .brand .mark{font-family:var(--display);font-weight:700;font-size:22px;letter-spacing:-.02em;color:var(--danger);}
+  .brand .sub{font-family:var(--mono);font-size:10.5px;color:var(--text-dim);}
+  main{padding:6px 14px 14px;max-width:720px;margin:0 auto;}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:3px;margin-bottom:12px;overflow:hidden;}
+  .card-head{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;cursor:pointer;user-select:none;}
+  .card-head .title{font-family:var(--display);font-weight:700;font-size:14px;}
+  .card-head .status{font-family:var(--mono);font-size:10px;color:var(--text-dim);text-transform:uppercase;}
+  .card-head .status.ok{color:var(--thawed);}
+  .card-head .status.err{color:var(--danger);}
+  .chev{font-family:var(--mono);color:var(--text-dim);font-size:12px;transition:transform .2s;}
+  .card.open .chev{transform:rotate(90deg);}
+  .card-body{display:none;padding:0 14px 14px;}
+  .card.open .card-body{display:block;}
+  p.help{color:var(--text-dim);font-size:12.5px;line-height:1.5;margin:0 0 10px;}
+  label{display:block;font-family:var(--mono);font-size:9.5px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;margin:8px 0 4px;}
+  input[type=text],input[type=password]{width:100%;background:var(--surface-2);border:1px solid var(--line);color:var(--text);font-family:var(--mono);font-size:12px;padding:8px 9px;border-radius:2px;}
+  input:focus{outline:2px solid var(--amber);outline-offset:1px;}
+  button.action{font-family:var(--display);font-weight:700;font-size:12.5px;background:var(--amber);color:#1a1408;border:none;border-radius:2px;padding:10px 14px;margin-top:10px;cursor:pointer;width:100%;}
+  button.action.danger{background:var(--danger);color:#2a0d0d;}
+  button.action.secondary{background:transparent;border:1px solid var(--amber);color:var(--amber);}
+  button.action.small{width:auto;padding:7px 11px;font-size:11px;margin:4px 4px 0 0;display:inline-block;}
+  button.action:disabled{opacity:.35;cursor:not-allowed;}
+  .out{font-family:var(--mono);font-size:11px;white-space:pre-wrap;word-break:break-all;background:#0E0C08;border:1px solid var(--line);border-radius:2px;padding:9px;margin-top:8px;max-height:280px;overflow:auto;color:#C9BE9F;}
+  .out .g{color:var(--thawed);} .out .r{color:var(--danger);}
+  .warn{background:#2a1414;border:1px solid var(--danger);color:#e3a3a3;font-size:12px;padding:10px;border-radius:2px;margin:8px 0;line-height:1.6;font-weight:600;}
+  .nft-table{width:100%;border-collapse:collapse;font-size:11.5px;}
+  .nft-table th{text-align:left;font-family:var(--mono);font-size:9.5px;color:var(--text-dim);text-transform:uppercase;padding:6px 4px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--surface);}
+  .nft-table td{padding:6px 4px;border-bottom:1px solid var(--line);vertical-align:middle;}
+  .nft-table tr.selected{background:#2a1414;}
+  .row-status{font-family:var(--mono);font-size:10px;color:var(--text-dim);}
+  .row-status.sent{color:var(--thawed);}
+  .row-status.error{color:var(--danger);}
+  .row-status.pending{color:var(--amber);}
+  .table-wrap{max-height:420px;overflow:auto;border:1px solid var(--line);border-radius:2px;}
+  .toolbar{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0;align-items:center;}
+  .count-pill{font-family:var(--mono);font-size:10.5px;color:var(--text-dim);margin-left:auto;}
+  footer{text-align:center;color:var(--text-dim);font-family:var(--mono);font-size:10px;padding:16px 14px 0;}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">
+    <span class="mark">Comb</span>
+    <span class="sub">Burn Generations (mpl-core) — reclaims rent SOL</span>
+  </div>
+</div>
+
+<main>
+  <div class="warn">⚠ Burning is permanent. There is no undo. Double-check every selection before confirming.</div>
+
+  <div class="card open" id="card-config">
+    <div class="card-head" onclick="toggleCard('card-config')"><span class="title">1 · Connection</span><span class="chev">▸</span></div>
+    <div class="card-body">
+      <label>RPC endpoint (Helius required)</label>
+      <input type="text" id="rpc" placeholder="https://mainnet.helius-rpc.com/?api-key=..." />
+      <label>Private key (base58) — or use wallet connect below</label>
+      <input type="password" id="privkey" placeholder="base58 secret key" />
+      <div class="out" style="display:block">Used only in your browser's memory to sign locally — never transmitted anywhere.</div>
+      <button class="action" onclick="loadPrivateKey()">Use this key</button>
+
+      <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:10px;">
+        <label>— or — connect wallet</label>
+        <button class="action secondary" onclick="connectWallet()">Connect Solflare / Phantom</button>
+        <button class="action ghost" onclick="disconnectWallet()">Disconnect</button>
+      </div>
+
+      <div class="out" id="wallet-status" style="display:none"></div>
+    </div>
+  </div>
+
+  <div class="card" id="card-scan">
+    <div class="card-head" onclick="toggleCard('card-scan')"><span class="title">2 · Scan Generations NFTs</span><span class="status" id="status-scan">not run</span></div>
+    <div class="card-body">
+      <p class="help">Finds every Generations (mpl-core) asset you own, whether frozen or not. Frozen ones will fail to burn until unfrozen first — this tool doesn't handle that, use the recovery app for that.</p>
+      <button class="action" onclick="scanWallet()">Scan wallet</button>
+      <div class="out" id="scan-log" style="display:none"></div>
+    </div>
+  </div>
+
+  <div class="card" id="card-list">
+    <div class="card-head" onclick="toggleCard('card-list')"><span class="title">3 · Select &amp; burn</span><span class="status" id="status-list"></span></div>
+    <div class="card-body">
+      <div class="toolbar">
+        <button class="action small" onclick="selectAll(true)">Select all</button>
+        <button class="action small" onclick="selectAll(false)">Select none</button>
+        <span class="count-pill" id="count-pill">0 selected</span>
+      </div>
+      <div class="table-wrap">
+        <table class="nft-table">
+          <thead><tr><th></th><th>Name</th><th>Frozen?</th><th>Status</th></tr></thead>
+          <tbody id="nft-tbody"></tbody>
+        </table>
+      </div>
+      <button class="action danger" id="burn-btn" onclick="confirmAndBurn()" disabled>Burn selected</button>
+      <div class="out" id="batch-log" style="display:none"></div>
+    </div>
+  </div>
+</main>
+
+<footer>mpl-core Burn instruction, client-side signing only. Permanent action.</footer>
+
+<script src="https://unpkg.com/@solana/web3.js@1.95.3/lib/index.iife.js"></script>
+<script>
+const { PublicKey, Transaction, TransactionInstruction, Keypair } = solanaWeb3;
+
+const METAPLEX_CORE_PROGRAM = new PublicKey("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
+const BURN_DATA = new Uint8Array([0x0c, 0x00]); // verified via real on-chain simulation
+
+const B58="123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+function b58decode(str){ let bytes=[0]; for(const c of str){ const val=B58.indexOf(c); if(val===-1) throw new Error('bad base58'); let carry=val; for(let j=0;j<bytes.length;j++){carry+=bytes[j]*58;bytes[j]=carry&0xff;carry>>=8;} while(carry>0){bytes.push(carry&0xff);carry>>=8;} } for(const c of str){ if(c==='1') bytes.push(0); else break; } return new Uint8Array(bytes.reverse()); }
+
+let state = { walletPubkey:null, signMode:null, keypair:null, provider:null, items:[] };
+
+function toggleCard(id){ document.getElementById(id).classList.toggle('open'); }
+function setStatus(id,text,cls){ const el=document.getElementById(id); el.textContent=text; el.className='status'+(cls?' '+cls:''); }
+function log(id,html,append){ const el=document.getElementById(id); el.style.display='block'; el.innerHTML = append ? el.innerHTML+html : html; el.scrollTop = el.scrollHeight; }
+
+async function connectWallet(){
+  const provider = window.solflare || window.solana;
+  const box = document.getElementById('wallet-status');
+  box.style.display='block';
+  if(!provider){
+    box.innerHTML = 'No injected wallet found. Open this page inside Solflare or Phantom\'s built-in browser tab.';
+    return;
+  }
+  try{
+    const resp = await provider.connect();
+    state.provider = provider;
+    state.signMode = 'wallet';
+    state.walletPubkey = resp.publicKey || provider.publicKey;
+    box.innerHTML = `connected: <span class="g">${state.walletPubkey.toString()}</span>`;
+
+    if(provider.on){
+      provider.on('accountChanged', (publicKey) => {
+        if(publicKey){
+          state.walletPubkey = publicKey;
+          box.innerHTML = `switched to: <span class="g">${publicKey.toString()}</span> - rescan to refresh the NFT list`;
+          state.items = [];
+          renderTable();
+          setStatus('status-scan', 'account changed - rescan', 'err');
+        } else {
+          disconnectWallet();
+        }
+      });
+    }
+  }catch(e){
+    box.innerHTML = `<span class="r">${e.message}</span>`;
+  }
+}
+
+async function disconnectWallet(){
+  const box = document.getElementById('wallet-status');
+  try{
+    if(state.provider && state.provider.disconnect) await state.provider.disconnect();
+  }catch(e){ /* ignore */ }
+  state.provider = null;
+  state.walletPubkey = null;
+  state.signMode = null;
+  state.items = [];
+  box.style.display='block';
+  box.innerHTML = 'disconnected.';
+  renderTable();
+  setStatus('status-scan', 'not run');
+}
+
+async function rpc(method, params){
+  const url = document.getElementById('rpc').value.trim();
+  if(!url) throw new Error('Set an RPC endpoint first.');
+  const res = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({jsonrpc:'2.0',id:1,method,params}) });
+  const json = await res.json();
+  if(json.error) throw new Error(JSON.stringify(json.error));
+  return json.result;
+}
+
+function loadPrivateKey(){
+  const secret = document.getElementById('privkey').value.trim();
+  const box = document.getElementById('wallet-status');
+  box.style.display='block';
+  try{
+    const arr = secret.startsWith('[') ? Uint8Array.from(JSON.parse(secret)) : b58decode(secret);
+    const kp = Keypair.fromSecretKey(arr);
+    state.keypair = kp;
+    state.signMode = 'privatekey';
+    state.walletPubkey = kp.publicKey;
+    box.innerHTML = `using key for: <span class="g">${kp.publicKey.toString()}</span>`;
+  }catch(e){
+    box.innerHTML = `<span class="r">invalid key: ${e.message}</span>`;
+  }
+}
+
+async function scanWallet(){
+  if(!state.walletPubkey){ setStatus('status-scan','load private key first','err'); return; }
+  setStatus('status-scan','scanning...');
+  log('scan-log','', false);
+
+  try{
+    let page=1, allAssets=[];
+    while(true){
+      const result = await rpc('getAssetsByOwner', { ownerAddress: state.walletPubkey.toString(), page, limit: 1000 });
+      allAssets.push(...(result.items||[]));
+      log('scan-log', `page ${page}: ${result.items.length} assets\n`, true);
+      if(result.items.length < 1000) break;
+      page++;
+    }
+
+    const generations = allAssets.filter(a => a.interface === 'MplCoreAsset');
+    log('scan-log', `\nFound ${generations.length} Generations (mpl-core) assets per DAS.\n`, true);
+    log('scan-log', `Verifying each one's real on-chain state (DAS can lag behind actual burns)...\n`, true);
+
+    // DAS's index can be stale for burned assets - it may keep listing an
+    // asset that's actually already gone on-chain. Cross-check each one's
+    // raw account size directly: a real, live mpl-core asset is always much
+    // larger than 1 byte; an already-burned one is tombstoned down to a
+    // single zero byte. This filters out phantom entries before you ever
+    // see them, rather than failing later when you try to burn one.
+    const verified = [];
+    const chunkSize = 90;
+    for(let i=0; i<generations.length; i+=chunkSize){
+      const chunk = generations.slice(i, i+chunkSize);
+      const addrs = chunk.map(a => a.id);
+      const infos = await rpc('getMultipleAccounts', [addrs, {encoding:'base64'}]);
+      infos.value.forEach((info, idx) => {
+        const space = info?.space ?? 0;
+        if(space > 1){
+          verified.push(chunk[idx]);
+        }
+      });
+      log('scan-log', '.', true);
+    }
+    const staleCount = generations.length - verified.length;
+    if(staleCount > 0){
+      log('scan-log', `\n${staleCount} already burned on-chain but still shown by DAS - excluded automatically.\n`, true);
+    }
+    log('scan-log', `\n${verified.length} genuinely live Generations assets.`, true);
+
+    state.items = verified.map((a,i) => ({
+      id: i,
+      mint: a.id,
+      name: a.content?.metadata?.name || a.id.slice(0,8),
+      collection: (a.grouping||[]).find(g=>g.group_key==='collection')?.group_value,
+      frozen: a.ownership?.frozen === true,
+      selected: false,
+      status: 'idle',
+    }));
+
+    renderTable();
+    setStatus('status-scan', `${state.items.length} found`, 'ok');
+    document.getElementById('card-list').classList.add('open');
+    setStatus('status-list', `${state.items.length} items`);
+  }catch(e){
+    log('scan-log', `\n<span class="r">${e.message}</span>`, true);
+    setStatus('status-scan','error','err');
+  }
+}
+
+function renderTable(){
+  const tbody = document.getElementById('nft-tbody');
+  tbody.innerHTML='';
+  state.items.forEach(item => {
+    const tr = document.createElement('tr');
+    tr.id = 'row-'+item.id;
+    tr.innerHTML = `
+      <td><input type="checkbox" onchange="toggleSelect(${item.id})" ${item.selected?'checked':''}></td>
+      <td>${item.name}</td>
+      <td>${item.frozen ? 'yes (will fail)' : 'no'}</td>
+      <td class="row-status" id="rowstatus-${item.id}">${item.status}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+  updateCount();
+}
+function toggleSelect(id){ const item = state.items.find(i=>i.id===id); item.selected = !item.selected; document.getElementById('row-'+id).classList.toggle('selected', item.selected); updateCount(); }
+function selectAll(val){ state.items.forEach(i => i.selected = val); renderTable(); }
+function updateCount(){
+  const n = state.items.filter(i=>i.selected).length;
+  document.getElementById('count-pill').textContent = `${n} selected`;
+  document.getElementById('burn-btn').disabled = n===0;
+}
+
+function buildBurnInstruction(item, wallet){
+  const keys = [
+    { pubkey: new PublicKey(item.mint), isSigner:false, isWritable:true },
+    { pubkey: new PublicKey(item.collection), isSigner:false, isWritable:true },
+    { pubkey: wallet, isSigner:true, isWritable:true },
+    { pubkey: METAPLEX_CORE_PROGRAM, isSigner:false, isWritable:false },
+    { pubkey: METAPLEX_CORE_PROGRAM, isSigner:false, isWritable:false },
+    { pubkey: METAPLEX_CORE_PROGRAM, isSigner:false, isWritable:false },
+  ];
+  return new TransactionInstruction({ programId: METAPLEX_CORE_PROGRAM, keys, data: BURN_DATA });
+}
+
+async function burnOne(item){
+  const wallet = state.walletPubkey;
+  const ix = buildBurnInstruction(item, wallet);
+  const tx = new Transaction().add(ix);
+  tx.feePayer = wallet;
+  const { blockhash } = await rpc('getLatestBlockhash', [{commitment:'confirmed'}]).then(r=>r.value||r);
+  tx.recentBlockhash = blockhash;
+
+  let signature;
+  if(state.signMode === 'privatekey'){
+    tx.sign(state.keypair);
+    const wireTx = tx.serialize().toString('base64');
+    signature = await rpc('sendTransaction', [wireTx, {encoding:'base64', skipPreflight:true, preflightCommitment:'confirmed'}]);
+  } else {
+    const signed = await state.provider.signTransaction(tx);
+    const wireTx = signed.serialize().toString('base64');
+    signature = await rpc('sendTransaction', [wireTx, {encoding:'base64', skipPreflight:true, preflightCommitment:'confirmed'}]);
+  }
+
+  for(let attempt=0; attempt<30; attempt++){
+    await new Promise(r=>setTimeout(r,1000));
+    const statuses = await rpc('getSignatureStatuses', [[signature]]);
+    const st = statuses.value[0];
+    if(st && (st.confirmationStatus==='confirmed' || st.confirmationStatus==='finalized')){
+      if(st.err) throw new Error('on-chain failure: '+JSON.stringify(st.err));
+      return signature;
+    }
+  }
+  throw new Error('confirmation timed out - check manually: '+signature);
+}
+
+function confirmAndBurn(){
+  const selected = state.items.filter(i=>i.selected);
+  const ok = confirm(`Permanently burn ${selected.length} NFT(s)? This cannot be undone.`);
+  if(ok) runBatch();
+}
+
+async function runBatch(){
+  const selected = state.items.filter(i=>i.selected);
+  if(selected.length===0) return;
+  document.getElementById('burn-btn').disabled = true;
+  log('batch-log','', false);
+
+  let done=0, failed=0;
+  for(const item of selected){
+    const rowEl = document.getElementById('rowstatus-'+item.id);
+    rowEl.textContent = 'burning...'; rowEl.className='row-status pending';
+    log('batch-log', `${item.name}: burning...\n`, true);
+    try{
+      const sig = await burnOne(item);
+      rowEl.textContent = 'burned'; rowEl.className='row-status sent';
+      log('batch-log', `${item.name}: <span class="g">burned</span> ${sig.slice(0,20)}...\n`, true);
+      done++;
+    }catch(e){
+      rowEl.textContent = 'failed'; rowEl.className='row-status error';
+      log('batch-log', `${item.name}: <span class="r">${e.message}</span>\n`, true);
+      failed++;
+    }
+    await new Promise(r=>setTimeout(r,600));
+  }
+  log('batch-log', `\n--- burned: ${done}  failed: ${failed} ---`, true);
+  document.getElementById('burn-btn').disabled = false;
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Overwritten immediately once the real mode loads (see App.tsx) — this static
+         fallback deliberately doesn't claim a specific network, since it used to say
+         "(Devnet)" unconditionally even while live on mainnet. -->
+    <title>Solana Trading Bot</title>
+  </head>
+  <body class="bg-slate-950 text-slate-100">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

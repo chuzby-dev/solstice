@@ -1,0 +1,14 @@
+{
+  "name": "Comb — Honeyland Recovery",
+  "short_name": "Comb",
+  "description": "Recover NFTs frozen by Honeyland's staking programs when the official frontend is unavailable.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#12100D",
+  "theme_color": "#12100D",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
