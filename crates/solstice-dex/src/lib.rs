@@ -7,12 +7,14 @@
 pub mod aggregator;
 pub mod error;
 pub mod jupiter;
+pub mod raydium;
 pub mod traits;
 pub mod types;
 
 pub use aggregator::{DexAggregator, RouteCache, RouteCacheKey};
 pub use error::{DexError, DexResult};
 pub use jupiter::JupiterClient;
+pub use raydium::RaydiumClient;
 pub use traits::DexClient;
 pub use types::{Liquidity, PriceUpdate, Quote, QuoteRequest, RouteSegment, SwapPlan, SwapRequest};
 

@@ -155,6 +155,50 @@ the Yellowstone/solana-sdk experience in Phase 1.2).
 
 ---
 
+## [0.1.0-alpha] - 2026-07-20 (Phase 2.2 partial update)
+
+### Phase 2.2 - Primary DEXes: Raydium ✅ (Orca, OpenBook not started)
+
+**solstice-blockchain gap fix**: `SolanaRpcClient` (Phase 1.3) only ever did
+endpoint selection and health tracking — nothing actually called a live
+Solana node. Added `get_account`/`get_multiple_accounts`, wrapping
+`solana_client::nonblocking::rpc_client::RpcClient` and routed through the
+existing endpoint failover/health tracking (success/error recorded per
+attempt, retried across the endpoint pool up to `max_retries`). Every
+future on-chain DEX integration needs this, not just Raydium.
+
+**`RaydiumClient`** (`solstice-dex::raydium`): real constant-product AMM v4
+integration against the `raydium_amm` crate (IDL-generated, solana-sdk
+2.x-native — its `Pubkey` unifies with ours in the dependency graph, no
+conversion needed).
+- `get_quote` fetches the pool account and both vault token accounts over
+  RPC, reads reserves via SPL Token's stable account layout (amount at
+  byte offset 64), and applies Raydium's actual constant-product formula
+  with the pool's actual on-chain `swap_fee_numerator/denominator`.
+- Pool addresses aren't derivable from a mint pair, so `RaydiumClient`
+  holds a small pool registry (`register_pool`) rather than guessing or
+  deriving one — population from config/discovery is a later task.
+- `build_swap_instructions` deliberately returns a descriptive error
+  instead of a guess: Raydium's `SwapBaseIn` instruction also needs the
+  pool's underlying OpenBook/Serum market accounts (bids/asks/event
+  queue/vault signer), and the only crate for that layout (`serum_dex`)
+  is pinned to a 2022-era Solana SDK incompatible with this workspace.
+  Hand-rolling that layout from memory for a real funds-moving
+  instruction was judged too risky to guess at (confirmed with the user
+  before proceeding this way).
+
+**Not started**: Orca (`orca_whirlpools_client`/`_core` exist and are
+actively maintained, but pin `solana-*` crates on the `^3` line — one
+major version ahead of this workspace's `2.2`, so `Pubkey` values need
+explicit byte-level conversion at the boundary, unlike Raydium) and
+OpenBook (blocked on the same stale `serum_dex`/`openbook-v2` dependency
+problem noted above).
+
+**Ready for**: Orca integration, or moving on to Phase 2.3/3 depending on
+priority — flagged to the user rather than assumed.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started

@@ -74,12 +74,14 @@ Solstice development follows a phased approach with clear milestones and gates. 
 - **Gate**: Can get best routes and build swap instructions ✅ COMPLETE
 
 **2.2 - Primary DEXes** (Week 9-10)
-- [ ] Raydium integration
+- [x] Raydium integration (quotes complete; swap-instruction building
+      blocked on a Solana-2.x-compatible OpenBook/Serum market layout, see
+      CHANGELOG)
 - [ ] Orca integration
 - [ ] OpenBook integration
-- [ ] Unified DEX interface
-- **Dependencies**: 2.1
-- **Gate**: Can get quotes from multiple DEXes
+- [x] Unified DEX interface
+- **Dependencies**: 2.1 ✅
+- **Gate**: Can get quotes from multiple DEXes ✅ PARTIAL (Jupiter + Raydium)
 
 **2.3 - Secondary DEXes** (Week 11-12)
 - [ ] Meteora integration

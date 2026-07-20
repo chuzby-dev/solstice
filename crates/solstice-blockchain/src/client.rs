@@ -1,9 +1,13 @@
 //! Solana RPC client with connection pooling and failover.
 
+use crate::accounts::{AccountInfo, BatchAccountResult};
 use crate::error::{BlockchainError, BlockchainResult};
 use crate::types::{EndpointHealth, RpcClientConfig, RpcEndpointConfig};
+use solana_client::nonblocking::rpc_client::RpcClient as NonblockingRpcClient;
+use solana_sdk::pubkey::Pubkey;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 use tracing::{debug, error};
 
 /// Solana RPC client with failover and connection pooling support.
@@ -168,11 +172,116 @@ impl SolanaRpcClient {
                 "Endpoint health not found".to_string(),
             ))
     }
+
+    fn build_rpc_client(&self, endpoint: &str) -> NonblockingRpcClient {
+        let timeout = self
+            .config
+            .endpoints
+            .iter()
+            .find(|e| e.url == endpoint)
+            .map(|e| Duration::from_secs(e.timeout_secs))
+            .unwrap_or(Duration::from_secs(30));
+
+        NonblockingRpcClient::new_with_timeout(endpoint.to_string(), timeout)
+    }
+
+    /// Fetch a single account's state, trying each endpoint in priority
+    /// order (with health tracking) until one succeeds or all fail.
+    pub async fn get_account(&self, pubkey: &Pubkey) -> BlockchainResult<AccountInfo> {
+        let result = self
+            .get_multiple_accounts(std::slice::from_ref(pubkey))
+            .await?;
+        result
+            .accounts
+            .into_iter()
+            .next()
+            .ok_or_else(|| BlockchainError::AccountNotFound(pubkey.to_string()))
+    }
+
+    /// Fetch multiple accounts in a single RPC round trip. Missing accounts
+    /// are reported in [`BatchAccountResult::failed`] rather than causing
+    /// the whole call to fail.
+    pub async fn get_multiple_accounts(
+        &self,
+        pubkeys: &[Pubkey],
+    ) -> BlockchainResult<BatchAccountResult> {
+        if pubkeys.is_empty() {
+            return Ok(BatchAccountResult::new());
+        }
+
+        let max_attempts = self.config.max_retries.max(1);
+        let overall_start = Instant::now();
+        let mut last_error: Option<String> = None;
+
+        for _ in 0..max_attempts {
+            let endpoint = self.get_active_endpoint()?;
+            let rpc = self.build_rpc_client(&endpoint);
+            let call_start = Instant::now();
+
+            match rpc.get_multiple_accounts(pubkeys).await {
+                Ok(accounts) => {
+                    let latency_ms = call_start.elapsed().as_secs_f64() * 1000.0;
+                    self.record_success(&endpoint, latency_ms)?;
+
+                    let mut result = BatchAccountResult::new();
+                    for (pubkey, maybe_account) in pubkeys.iter().zip(accounts) {
+                        match maybe_account {
+                            Some(account) => result
+                                .accounts
+                                .push(AccountInfo::from_solana_account(*pubkey, account)),
+                            None => result
+                                .failed
+                                .push((*pubkey, "account not found".to_string())),
+                        }
+                    }
+                    result.elapsed_ms = overall_start.elapsed().as_millis() as u64;
+                    return Ok(result);
+                }
+                Err(e) => {
+                    let message = e.to_string();
+                    self.record_error(&endpoint, message.clone())?;
+                    last_error = Some(message);
+                }
+            }
+        }
+
+        Err(BlockchainError::RpcError(
+            last_error.unwrap_or_else(|| "all RPC attempts failed".to_string()),
+        ))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn test_get_multiple_accounts_empty_input() {
+        let config = RpcClientConfig {
+            endpoints: vec![RpcEndpointConfig::new("http://localhost:8899".to_string())],
+            ..Default::default()
+        };
+        let client = SolanaRpcClient::new(config).unwrap();
+
+        let result = client.get_multiple_accounts(&[]).await.unwrap();
+        assert!(result.accounts.is_empty());
+        assert!(result.failed.is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live, reachable Solana RPC endpoint"]
+    async fn test_get_account_live() {
+        // System program account; always exists on any real cluster.
+        let system_program = Pubkey::default();
+        let client =
+            SolanaRpcClient::with_endpoints(
+                vec!["https://api.mainnet-beta.solana.com".to_string()],
+            )
+            .unwrap();
+
+        let account = client.get_account(&system_program).await.unwrap();
+        assert_eq!(account.address, system_program);
+    }
 
     #[test]
     fn test_client_creation() {
