@@ -1,9 +1,8 @@
 //! Account state queries and utilities.
 
-use crate::error::{BlockchainError, BlockchainResult};
-use solana_sdk::{pubkey::Pubkey, account::Account};
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use solana_sdk::{account::Account, pubkey::Pubkey};
 
 /// Account information wrapper.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,12 +188,8 @@ mod tests {
 
     #[test]
     fn test_account_info_data_size() {
-        let mut info = AccountInfo::new_without_data(
-            Pubkey::new_unique(),
-            Pubkey::new_unique(),
-            1000,
-            false,
-        );
+        let mut info =
+            AccountInfo::new_without_data(Pubkey::new_unique(), Pubkey::new_unique(), 1000, false);
 
         assert_eq!(info.data_size(), 0);
 
@@ -221,7 +216,7 @@ mod tests {
             .failed
             .push((Pubkey::new_unique(), "Not found".to_string()));
 
-        assert_eq!(result.success_rate(), 200.0 / 3.0); // ~66.67%
+        assert!((result.success_rate() - 200.0 / 3.0).abs() < 1e-9); // ~66.67%
         assert!(!result.all_succeeded());
     }
 
@@ -234,12 +229,8 @@ mod tests {
 
     #[test]
     fn test_account_info_serialization() {
-        let info = AccountInfo::new_without_data(
-            Pubkey::new_unique(),
-            Pubkey::new_unique(),
-            1000,
-            false,
-        );
+        let info =
+            AccountInfo::new_without_data(Pubkey::new_unique(), Pubkey::new_unique(), 1000, false);
 
         let json = serde_json::to_string(&info).unwrap();
         let deserialized: AccountInfo = serde_json::from_str(&json).unwrap();

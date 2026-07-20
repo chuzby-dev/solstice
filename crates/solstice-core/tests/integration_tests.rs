@@ -1,13 +1,13 @@
 //! Integration tests for solstice-core.
 
+use solana_sdk::pubkey::Pubkey;
 use solstice_core::{
     types::{
-        PositionId, TokenPair, Price, OrderBook, Signal, SignalType, Position, Trade, TradeAction,
-        Portfolio, MarketEvent,
+        MarketEvent, OrderBook, Portfolio, Position, PositionId, Signal, SignalType, TokenPair,
+        Trade, TradeAction,
     },
     Result, SolsticeError,
 };
-use solana_sdk::pubkey::Pubkey;
 
 #[test]
 fn test_core_types_compilation() {
@@ -25,7 +25,7 @@ fn test_position_workflow() {
     let pair = TokenPair::new(Pubkey::new_unique(), Pubkey::new_unique());
 
     // Create position
-    let mut position = Position::new(pair.clone(), 100, 100.0);
+    let mut position = Position::new(pair, 100, 100.0);
     assert_eq!(position.quantity, 100);
     assert_eq!(position.entry_price, 100.0);
     assert_eq!(position.unrealized_pnl(), 0.0);
@@ -42,14 +42,14 @@ fn test_orderbook_validation() {
 
     // Valid orderbook
     let valid_book = OrderBook::new(
-        pair.clone(),
+        pair,
         vec![(100.0, 1000), (99.0, 2000)],
         vec![(101.0, 1000), (102.0, 2000)],
     );
     assert!(valid_book.is_valid());
 
     // Invalid: empty bids
-    let invalid_book = OrderBook::new(pair.clone(), vec![], vec![(101.0, 1000)]);
+    let invalid_book = OrderBook::new(pair, vec![], vec![(101.0, 1000)]);
     assert!(!invalid_book.is_valid());
 
     // Invalid: crossing (bid >= ask)
@@ -78,9 +78,9 @@ fn test_trade_creation_and_fees() {
         PositionId::new(),
         pair,
         TradeAction::Buy,
-        10000,  // 10,000 tokens
-        100.0,   // at $100 each
-        25.0,    // $25 in fees
+        10000, // 10,000 tokens
+        100.0, // at $100 each
+        25.0,  // $25 in fees
     );
 
     assert_eq!(trade.total_value(), 1_000_000.0);
@@ -101,7 +101,7 @@ fn test_portfolio_concentration() {
 
     let portfolio = Portfolio {
         positions: vec![pos1, pos2],
-        total_value: 20000.0,  // 10000 + 10000
+        total_value: 20000.0, // 10000 + 10000
         available_capital: 0,
         timestamp: chrono::Utc::now(),
     };
@@ -110,7 +110,7 @@ fn test_portfolio_concentration() {
     assert_eq!(concentration.len(), 2);
 
     // Each position should be 50% of portfolio
-    for (_, pct) in concentration.iter() {
+    for pct in concentration.values() {
         assert!((*pct - 0.5).abs() < 0.01);
     }
 }
@@ -136,8 +136,10 @@ fn test_serialization_roundtrip() {
 #[test]
 fn test_result_type() {
     let ok_result: Result<i32> = Ok(42);
-    assert!(ok_result.is_ok());
-    assert_eq!(ok_result.unwrap(), 42);
+    match ok_result {
+        Ok(value) => assert_eq!(value, 42),
+        Err(_) => panic!("expected Ok"),
+    }
 
     let err_result: Result<i32> = Err(SolsticeError::ConfigError("test error".to_string()));
     assert!(err_result.is_err());

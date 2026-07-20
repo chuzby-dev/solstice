@@ -1,7 +1,7 @@
 //! Logging configuration and utilities for Solstice.
 
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use std::path::Path;
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 /// Initialize logging with structured JSON output.
 pub fn init_logging() {
@@ -10,8 +10,7 @@ pub fn init_logging() {
 
 /// Initialize logging with a custom environment variable for log level.
 pub fn init_logging_with_env(env_var: &str) {
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = EnvFilter::try_from_env(env_var).unwrap_or_else(|_| EnvFilter::new("info"));
 
     let layer = fmt::layer()
         .json()
@@ -34,8 +33,7 @@ pub fn init_logging_with_file(path: impl AsRef<Path>) -> std::io::Result<()> {
         .append(true)
         .open(path)?;
 
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     let layer = fmt::layer()
         .json()
@@ -53,8 +51,6 @@ pub fn init_logging_with_file(path: impl AsRef<Path>) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_logging_init() {
         // Note: Can only initialize logging once per process

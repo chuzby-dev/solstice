@@ -1,7 +1,7 @@
 //! Blockchain-specific types.
 
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use solana_sdk::signature::Signature;
 
 /// Configuration for RPC endpoint.
@@ -142,6 +142,8 @@ pub struct EndpointHealth {
     pub last_error: Option<String>,
     /// Last health check timestamp.
     pub last_check: DateTime<Utc>,
+    /// Number of successful latency samples recorded.
+    success_count: u64,
 }
 
 impl EndpointHealth {
@@ -155,6 +157,7 @@ impl EndpointHealth {
             consecutive_errors: 0,
             last_error: None,
             last_check: Utc::now(),
+            success_count: 0,
         }
     }
 
@@ -171,7 +174,8 @@ impl EndpointHealth {
         self.consecutive_errors = 0;
         self.last_error = None;
         self.is_healthy = true;
-        self.avg_latency_ms = (self.avg_latency_ms + latency_ms) / 2.0;
+        self.success_count += 1;
+        self.avg_latency_ms += (latency_ms - self.avg_latency_ms) / self.success_count as f64;
         self.error_rate = 0.0;
     }
 }

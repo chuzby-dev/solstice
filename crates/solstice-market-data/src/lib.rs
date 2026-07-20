@@ -9,7 +9,7 @@ pub mod error;
 pub mod manager;
 
 pub use cache::MarketDataCache;
-pub use error::{MarketDataResult, MarketDataError};
+pub use error::{MarketDataError, MarketDataResult};
 pub use manager::MarketDataManager;
 
 #[cfg(test)]

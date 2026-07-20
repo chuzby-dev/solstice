@@ -3,13 +3,6 @@ members = [
     "crates/solstice-core",
     "crates/solstice-blockchain",
     "crates/solstice-market-data",
-    "crates/solstice-dex",
-    "crates/solstice-strategy",
-    "crates/solstice-execution",
-    "crates/solstice-storage",
-    "crates/solstice-api",
-    "crates/solstice-simulation",
-    "crates/solstice-cli",
 ]
 resolver = "2"
 

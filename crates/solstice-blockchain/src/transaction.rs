@@ -1,12 +1,11 @@
 //! Transaction building and submission.
 
 use crate::error::{BlockchainError, BlockchainResult};
+#[cfg(test)]
+use solana_sdk::signature::Keypair;
 use solana_sdk::{
+    hash::Hash, instruction::Instruction, pubkey::Pubkey, signature::Signature, signer::Signer,
     transaction::Transaction,
-    instruction::Instruction,
-    pubkey::Pubkey,
-    signature::{Keypair, Signature},
-    signer::Signer,
 };
 use std::fmt;
 
@@ -89,17 +88,14 @@ impl TransactionBuilder {
             &self.instructions,
             Some(&payer),
             signers,
-            recent_blockhash,
+            Hash::new_from_array(recent_blockhash),
         );
 
         Ok(transaction)
     }
 
     /// Build transaction without signing (for simulation).
-    pub fn build_unsigned(
-        self,
-        recent_blockhash: [u8; 32],
-    ) -> BlockchainResult<Transaction> {
+    pub fn build_unsigned(self, recent_blockhash: [u8; 32]) -> BlockchainResult<Transaction> {
         if self.instructions.is_empty() {
             return Err(BlockchainError::TransactionError(
                 "No instructions in transaction".to_string(),
@@ -110,8 +106,8 @@ impl TransactionBuilder {
             "No payer specified".to_string(),
         ))?;
 
-        // Create a dummy signature for the payer
-        let transaction = Transaction::new_with_payer(&self.instructions, Some(&payer));
+        let mut transaction = Transaction::new_with_payer(&self.instructions, Some(&payer));
+        transaction.message.recent_blockhash = Hash::new_from_array(recent_blockhash);
 
         Ok(transaction)
     }
@@ -121,7 +117,8 @@ impl TransactionBuilder {
         // Rough estimation: header + instructions + signatures
         // Actual size depends on serialization
         let header_size = 64; // Estimate for header
-        let instruction_size: usize = self.instructions
+        let instruction_size: usize = self
+            .instructions
             .iter()
             .map(|ix| 1 + 4 + ix.accounts.len() * 32 + ix.data.len())
             .sum();
@@ -204,11 +201,7 @@ mod tests {
     #[test]
     fn test_builder_clear() {
         let mut builder = TransactionBuilder::new();
-        let instruction = Instruction::new_with_bytes(
-            Pubkey::new_unique(),
-            &[1, 2, 3],
-            vec![],
-        );
+        let instruction = Instruction::new_with_bytes(Pubkey::new_unique(), &[1, 2, 3], vec![]);
         builder = builder.add_instruction(instruction);
         assert_eq!(builder.instruction_count(), 1);
 

@@ -1,8 +1,8 @@
 //! Market data manager coordinating ingestion, normalization, and caching.
 
 use crate::cache::MarketDataCache;
-use crate::error::{MarketDataResult, MarketDataError};
-use solstice_core::types::{Price, OrderBook, TokenPair, MarketEvent};
+use crate::error::{MarketDataError, MarketDataResult};
+use solstice_core::types::{MarketEvent, OrderBook, Price, TokenPair};
 use std::sync::Arc;
 use tracing::{debug, info};
 
@@ -15,7 +15,10 @@ impl MarketDataManager {
     /// Create a new market data manager.
     pub fn new(price_ttl_seconds: u64, orderbook_ttl_seconds: u64) -> Self {
         MarketDataManager {
-            cache: Arc::new(MarketDataCache::new(price_ttl_seconds, orderbook_ttl_seconds)),
+            cache: Arc::new(MarketDataCache::new(
+                price_ttl_seconds,
+                orderbook_ttl_seconds,
+            )),
         }
     }
 
@@ -50,7 +53,7 @@ impl MarketDataManager {
                 token_pair,
                 price,
                 source,
-                timestamp,
+                timestamp: _,
             } => {
                 if price <= 0.0 || !price.is_finite() {
                     return Err(MarketDataError::ValidationError(
@@ -58,7 +61,7 @@ impl MarketDataManager {
                     ));
                 }
 
-                let price_obj = Price::new(price, token_pair.clone(), 0.95);
+                let price_obj = Price::new(price, token_pair, 0.95);
                 self.update_price(token_pair, price_obj)?;
                 debug!("Handled price update from {}", source);
                 Ok(())
@@ -71,7 +74,7 @@ impl MarketDataManager {
                     ));
                 }
 
-                self.update_orderbook(orderbook.market.clone(), orderbook)?;
+                self.update_orderbook(orderbook.market, orderbook)?;
                 debug!("Handled orderbook update");
                 Ok(())
             }
@@ -79,9 +82,12 @@ impl MarketDataManager {
             MarketEvent::LiquidityUpdate {
                 pair,
                 available_liquidity,
-                timestamp,
+                timestamp: _,
             } => {
-                debug!("Handled liquidity update for {:?}: {}", pair, available_liquidity);
+                debug!(
+                    "Handled liquidity update for {:?}: {}",
+                    pair, available_liquidity
+                );
                 Ok(())
             }
         }
@@ -106,8 +112,8 @@ impl MarketDataManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use solana_sdk::pubkey::Pubkey;
     use chrono::Utc;
+    use solana_sdk::pubkey::Pubkey;
 
     #[test]
     fn test_manager_creation() {
@@ -119,9 +125,9 @@ mod tests {
     fn test_price_update() {
         let manager = MarketDataManager::new(60, 30);
         let pair = TokenPair::new(Pubkey::new_unique(), Pubkey::new_unique());
-        let price = Price::new(100.0, pair.clone(), 0.95);
+        let price = Price::new(100.0, pair, 0.95);
 
-        manager.update_price(pair.clone(), price).unwrap();
+        manager.update_price(pair, price).unwrap();
 
         let cached = manager.get_price(&pair).unwrap();
         assert!(cached.is_some());
@@ -133,7 +139,7 @@ mod tests {
         let pair = TokenPair::new(Pubkey::new_unique(), Pubkey::new_unique());
 
         let event = MarketEvent::PriceUpdate {
-            token_pair: pair.clone(),
+            token_pair: pair,
             price: 100.0,
             source: "test".to_string(),
             timestamp: Utc::now(),
@@ -152,7 +158,7 @@ mod tests {
 
         let event = MarketEvent::PriceUpdate {
             token_pair: pair,
-            price: -50.0,  // Invalid: negative
+            price: -50.0, // Invalid: negative
             source: "test".to_string(),
             timestamp: Utc::now(),
         };
@@ -164,9 +170,9 @@ mod tests {
     fn test_orderbook_update() {
         let manager = MarketDataManager::new(60, 30);
         let pair = TokenPair::new(Pubkey::new_unique(), Pubkey::new_unique());
-        let book = OrderBook::new(pair.clone(), vec![(100.0, 1000)], vec![(101.0, 1000)]);
+        let book = OrderBook::new(pair, vec![(100.0, 1000)], vec![(101.0, 1000)]);
 
-        manager.update_orderbook(pair.clone(), book).unwrap();
+        manager.update_orderbook(pair, book).unwrap();
 
         let cached = manager.get_orderbook(&pair).unwrap();
         assert!(cached.is_some());

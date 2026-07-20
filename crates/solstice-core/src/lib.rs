@@ -5,8 +5,8 @@
 //! consistent interfaces.
 
 pub mod error;
-pub mod types;
 pub mod logging;
+pub mod types;
 
 pub use error::{Result, SolsticeError};
 pub use types::*;

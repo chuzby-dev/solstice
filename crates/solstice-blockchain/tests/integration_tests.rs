@@ -1,10 +1,10 @@
 //! Integration tests for blockchain module.
 
-use solstice_blockchain::{
-    SolanaRpcClient, RpcClientConfig, RpcEndpointConfig,
-    TransactionBuilder, SimulationResult, AccountInfo,
-};
 use solana_sdk::pubkey::Pubkey;
+use solstice_blockchain::{
+    AccountInfo, RpcClientConfig, RpcEndpointConfig, SimulationResult, SolanaRpcClient,
+    TransactionBuilder,
+};
 
 #[test]
 fn test_rpc_client_creation_with_endpoints() {
@@ -22,9 +22,7 @@ fn test_rpc_client_creation_with_endpoints() {
 
 #[test]
 fn test_rpc_client_with_helper() {
-    let result = SolanaRpcClient::with_endpoints(vec![
-        "http://localhost:8899".to_string(),
-    ]);
+    let result = SolanaRpcClient::with_endpoints(vec!["http://localhost:8899".to_string()]);
 
     assert!(result.is_ok());
 }
@@ -50,10 +48,7 @@ fn test_transaction_builder_size_estimation() {
 
 #[test]
 fn test_simulation_success_result() {
-    let result = SimulationResult::success(
-        vec!["Log 1".to_string(), "Log 2".to_string()],
-        50000,
-    );
+    let result = SimulationResult::success(vec!["Log 1".to_string(), "Log 2".to_string()], 50000);
 
     assert!(result.success);
     assert!(!result.has_error());
@@ -70,7 +65,10 @@ fn test_simulation_failure_result() {
 
     assert!(!result.success);
     assert!(result.has_error());
-    assert_eq!(result.error_message(), Some("Program error: insufficient funds"));
+    assert_eq!(
+        result.error_message(),
+        Some("Program error: insufficient funds")
+    );
 }
 
 #[test]
@@ -98,12 +96,8 @@ fn test_account_info_creation() {
 
 #[test]
 fn test_account_info_with_data() {
-    let mut info = AccountInfo::new_without_data(
-        Pubkey::new_unique(),
-        Pubkey::new_unique(),
-        1000000,
-        false,
-    );
+    let mut info =
+        AccountInfo::new_without_data(Pubkey::new_unique(), Pubkey::new_unique(), 1000000, false);
 
     let data = vec![0u8; 256];
     info.data = Some(data.clone());
@@ -117,12 +111,7 @@ fn test_account_ownership_check() {
     let owner = Pubkey::new_unique();
     let other = Pubkey::new_unique();
 
-    let info = AccountInfo::new_without_data(
-        Pubkey::new_unique(),
-        owner,
-        1000,
-        false,
-    );
+    let info = AccountInfo::new_without_data(Pubkey::new_unique(), owner, 1000, false);
 
     assert!(info.is_owned_by(&owner));
     assert!(!info.is_owned_by(&other));
@@ -130,16 +119,11 @@ fn test_account_ownership_check() {
 
 #[test]
 fn test_account_info_serialization() {
-    let info = AccountInfo::new_without_data(
-        Pubkey::new_unique(),
-        Pubkey::new_unique(),
-        5000000,
-        false,
-    );
+    let info =
+        AccountInfo::new_without_data(Pubkey::new_unique(), Pubkey::new_unique(), 5000000, false);
 
     let json = serde_json::to_string(&info).expect("Serialization failed");
-    let deserialized: AccountInfo = serde_json::from_str(&json)
-        .expect("Deserialization failed");
+    let deserialized: AccountInfo = serde_json::from_str(&json).expect("Deserialization failed");
 
     assert_eq!(info.address, deserialized.address);
     assert_eq!(info.owner, deserialized.owner);
@@ -148,25 +132,23 @@ fn test_account_info_serialization() {
 
 #[test]
 fn test_simulation_result_serialization() {
-    let result = SimulationResult::success(
-        vec!["Test log".to_string()],
-        75000,
-    );
+    let result = SimulationResult::success(vec!["Test log".to_string()], 75000);
 
     let json = serde_json::to_string(&result).expect("Serialization failed");
-    let deserialized: SimulationResult = serde_json::from_str(&json)
-        .expect("Deserialization failed");
+    let deserialized: SimulationResult =
+        serde_json::from_str(&json).expect("Deserialization failed");
 
     assert_eq!(result.success, deserialized.success);
-    assert_eq!(result.compute_units_consumed, deserialized.compute_units_consumed);
+    assert_eq!(
+        result.compute_units_consumed,
+        deserialized.compute_units_consumed
+    );
 }
 
 #[test]
 fn test_rpc_endpoint_health_tracking() {
     let config = RpcClientConfig {
-        endpoints: vec![
-            RpcEndpointConfig::new("http://localhost:8899".to_string()),
-        ],
+        endpoints: vec![RpcEndpointConfig::new("http://localhost:8899".to_string())],
         ..Default::default()
     };
 
@@ -174,18 +156,25 @@ fn test_rpc_endpoint_health_tracking() {
     let endpoint = client.get_active_endpoint().expect("No active endpoint");
 
     // Record a success
-    client.record_success(&endpoint, 50.0).expect("Failed to record success");
+    client
+        .record_success(&endpoint, 50.0)
+        .expect("Failed to record success");
 
-    let health = client.get_active_endpoint_health().expect("Failed to get health");
+    let health = client
+        .get_active_endpoint_health()
+        .expect("Failed to get health");
     assert!(health.is_healthy);
     assert_eq!(health.consecutive_errors, 0);
 
     // Record an error
-    client.record_error(&endpoint, "Test error".to_string())
+    client
+        .record_error(&endpoint, "Test error".to_string())
         .expect("Failed to record error");
 
     // Endpoint should still be healthy (1 error)
-    let health = client.get_active_endpoint_health().expect("Failed to get health");
+    let health = client
+        .get_active_endpoint_health()
+        .expect("Failed to get health");
     assert_eq!(health.consecutive_errors, 1);
 }
 

@@ -1,13 +1,10 @@
 //! Solana RPC client with connection pooling and failover.
 
 use crate::error::{BlockchainError, BlockchainResult};
-use crate::types::{RpcClientConfig, RpcEndpointConfig, EndpointHealth, TransactionConfirmation, TransactionStatus};
-use std::sync::{Arc, RwLock};
+use crate::types::{EndpointHealth, RpcClientConfig, RpcEndpointConfig};
 use std::collections::HashMap;
-use tracing::{debug, warn, error};
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Signature;
-use chrono::Utc;
+use std::sync::{Arc, RwLock};
+use tracing::{debug, error};
 
 /// Solana RPC client with failover and connection pooling support.
 pub struct SolanaRpcClient {
@@ -25,7 +22,10 @@ impl SolanaRpcClient {
 
         let mut health = HashMap::new();
         for endpoint in &config.endpoints {
-            health.insert(endpoint.url.clone(), EndpointHealth::new(endpoint.url.clone()));
+            health.insert(
+                endpoint.url.clone(),
+                EndpointHealth::new(endpoint.url.clone()),
+            );
         }
 
         Ok(SolanaRpcClient {
@@ -37,17 +37,18 @@ impl SolanaRpcClient {
 
     /// Create a new RPC client with default configuration and specified endpoints.
     pub fn with_endpoints(urls: Vec<String>) -> BlockchainResult<Self> {
-        let mut config = RpcClientConfig::default();
-        config.endpoints = urls
-            .into_iter()
-            .map(RpcEndpointConfig::new)
-            .collect();
+        let config = RpcClientConfig {
+            endpoints: urls.into_iter().map(RpcEndpointConfig::new).collect(),
+            ..Default::default()
+        };
         Self::new(config)
     }
 
     /// Get the current active endpoint URL.
     pub fn get_active_endpoint(&self) -> BlockchainResult<String> {
-        let selected = self.selected_endpoint.read()
+        let selected = self
+            .selected_endpoint
+            .read()
             .map_err(|_| BlockchainError::ConnectionError("Lock poisoned".to_string()))?
             .clone();
 
@@ -61,17 +62,17 @@ impl SolanaRpcClient {
 
     /// Select the best endpoint based on health metrics.
     fn select_best_endpoint(&self) -> BlockchainResult<String> {
-        let health = self.endpoint_health.read()
+        let health = self
+            .endpoint_health
+            .read()
             .map_err(|_| BlockchainError::ConnectionError("Lock poisoned".to_string()))?;
 
         // Filter to healthy endpoints
-        let healthy: Vec<_> = self.config.endpoints
+        let healthy: Vec<_> = self
+            .config
+            .endpoints
             .iter()
-            .filter(|ep| {
-                health.get(&ep.url)
-                    .map(|h| h.is_healthy)
-                    .unwrap_or(true)
-            })
+            .filter(|ep| health.get(&ep.url).map(|h| h.is_healthy).unwrap_or(true))
             .collect();
 
         if healthy.is_empty() {
@@ -89,9 +90,11 @@ impl SolanaRpcClient {
         drop(health);
 
         // Update selected endpoint
-        *self.selected_endpoint.write()
-            .map_err(|_| BlockchainError::ConnectionError("Lock poisoned".to_string()))?
-            = Some(endpoint_url.clone());
+        *self
+            .selected_endpoint
+            .write()
+            .map_err(|_| BlockchainError::ConnectionError("Lock poisoned".to_string()))? =
+            Some(endpoint_url.clone());
 
         debug!("Selected RPC endpoint: {}", endpoint_url);
         Ok(endpoint_url)
@@ -99,7 +102,9 @@ impl SolanaRpcClient {
 
     /// Record a successful RPC call.
     pub fn record_success(&self, endpoint: &str, latency_ms: f64) -> BlockchainResult<()> {
-        let mut health = self.endpoint_health.write()
+        let mut health = self
+            .endpoint_health
+            .write()
             .map_err(|_| BlockchainError::ConnectionError("Lock poisoned".to_string()))?;
 
         if let Some(ep_health) = health.get_mut(endpoint) {
@@ -110,7 +115,9 @@ impl SolanaRpcClient {
 
     /// Record a failed RPC call.
     pub fn record_error(&self, endpoint: &str, error: String) -> BlockchainResult<()> {
-        let mut health = self.endpoint_health.write()
+        let mut health = self
+            .endpoint_health
+            .write()
             .map_err(|_| BlockchainError::ConnectionError("Lock poisoned".to_string()))?;
 
         if let Some(ep_health) = health.get_mut(endpoint) {
@@ -118,16 +125,19 @@ impl SolanaRpcClient {
         }
 
         // Clear selected endpoint so next call selects a new one
-        *self.selected_endpoint.write()
-            .map_err(|_| BlockchainError::ConnectionError("Lock poisoned".to_string()))?
-            = None;
+        *self
+            .selected_endpoint
+            .write()
+            .map_err(|_| BlockchainError::ConnectionError("Lock poisoned".to_string()))? = None;
 
         Ok(())
     }
 
     /// Get health status of all endpoints.
     pub fn get_endpoint_health(&self) -> BlockchainResult<Vec<EndpointHealth>> {
-        let health = self.endpoint_health.read()
+        let health = self
+            .endpoint_health
+            .read()
             .map_err(|_| BlockchainError::ConnectionError("Lock poisoned".to_string()))?;
 
         Ok(health.values().cloned().collect())
@@ -135,23 +145,28 @@ impl SolanaRpcClient {
 
     /// Check if endpoint is healthy.
     pub fn is_endpoint_healthy(&self, endpoint: &str) -> BlockchainResult<bool> {
-        let health = self.endpoint_health.read()
+        let health = self
+            .endpoint_health
+            .read()
             .map_err(|_| BlockchainError::ConnectionError("Lock poisoned".to_string()))?;
 
-        Ok(health.get(endpoint)
-            .map(|h| h.is_healthy)
-            .unwrap_or(false))
+        Ok(health.get(endpoint).map(|h| h.is_healthy).unwrap_or(false))
     }
 
     /// Get active endpoint health status.
     pub fn get_active_endpoint_health(&self) -> BlockchainResult<EndpointHealth> {
         let endpoint = self.get_active_endpoint()?;
-        let health = self.endpoint_health.read()
+        let health = self
+            .endpoint_health
+            .read()
             .map_err(|_| BlockchainError::ConnectionError("Lock poisoned".to_string()))?;
 
-        health.get(&endpoint)
+        health
+            .get(&endpoint)
             .cloned()
-            .ok_or(BlockchainError::ConnectionError("Endpoint health not found".to_string()))
+            .ok_or(BlockchainError::ConnectionError(
+                "Endpoint health not found".to_string(),
+            ))
     }
 }
 
@@ -162,9 +177,7 @@ mod tests {
     #[test]
     fn test_client_creation() {
         let config = RpcClientConfig {
-            endpoints: vec![
-                RpcEndpointConfig::new("http://localhost:8899".to_string()),
-            ],
+            endpoints: vec![RpcEndpointConfig::new("http://localhost:8899".to_string())],
             ..Default::default()
         };
 
@@ -197,9 +210,7 @@ mod tests {
     #[test]
     fn test_error_recording() {
         let config = RpcClientConfig {
-            endpoints: vec![
-                RpcEndpointConfig::new("http://localhost:8899".to_string()),
-            ],
+            endpoints: vec![RpcEndpointConfig::new("http://localhost:8899".to_string())],
             ..Default::default()
         };
 
@@ -207,7 +218,9 @@ mod tests {
         let endpoint = client.get_active_endpoint().unwrap();
 
         // Record error
-        client.record_error(&endpoint, "test error".to_string()).unwrap();
+        client
+            .record_error(&endpoint, "test error".to_string())
+            .unwrap();
 
         // Endpoint should be marked unhealthy after enough errors
         let health = client.get_active_endpoint_health().unwrap();
@@ -217,9 +230,7 @@ mod tests {
     #[test]
     fn test_success_recording() {
         let config = RpcClientConfig {
-            endpoints: vec![
-                RpcEndpointConfig::new("http://localhost:8899".to_string()),
-            ],
+            endpoints: vec![RpcEndpointConfig::new("http://localhost:8899".to_string())],
             ..Default::default()
         };
 

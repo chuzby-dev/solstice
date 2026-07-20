@@ -1,10 +1,10 @@
 //! In-memory market data cache.
 
-use solstice_core::types::{Price, OrderBook, TokenPair};
-use crate::error::{MarketDataResult, MarketDataError};
-use std::sync::{Arc, RwLock};
+use crate::error::{MarketDataError, MarketDataResult};
+use chrono::{DateTime, Utc};
+use solstice_core::types::{OrderBook, Price, TokenPair};
 use std::collections::HashMap;
-use chrono::{DateTime, Utc, Duration};
+use std::sync::{Arc, RwLock};
 use tracing::debug;
 
 /// Cache entry with timestamp.
@@ -23,13 +23,11 @@ impl<T: Clone> CacheEntry<T> {
     }
 
     fn age_seconds(&self) -> u64 {
-        (Utc::now() - self.timestamp)
-            .num_seconds()
-            .max(0) as u64
+        (Utc::now() - self.timestamp).num_seconds().max(0) as u64
     }
 
     fn is_expired(&self, ttl_seconds: u64) -> bool {
-        self.age_seconds() > ttl_seconds
+        self.age_seconds() >= ttl_seconds
     }
 }
 
@@ -56,7 +54,9 @@ impl MarketDataCache {
 
     /// Get cached price if available and not expired.
     pub fn get_price(&self, pair: &TokenPair) -> MarketDataResult<Option<Price>> {
-        let prices = self.prices.read()
+        let prices = self
+            .prices
+            .read()
             .map_err(|_| MarketDataError::CacheError("Lock poisoned".to_string()))?;
 
         if let Some(entry) = prices.get(pair) {
@@ -64,7 +64,7 @@ impl MarketDataCache {
                 debug!("Price cache expired for {:?}", pair);
                 return Ok(None);
             }
-            return Ok(Some(entry.value.clone()));
+            return Ok(Some(entry.value));
         }
 
         Ok(None)
@@ -72,28 +72,32 @@ impl MarketDataCache {
 
     /// Cache a price update.
     pub fn set_price(&self, pair: TokenPair, price: Price) -> MarketDataResult<()> {
-        let mut prices = self.prices.write()
+        let mut prices = self
+            .prices
+            .write()
             .map_err(|_| MarketDataError::CacheError("Lock poisoned".to_string()))?;
 
         // Simple eviction: clear half of entries if at max capacity
         if prices.len() >= self.max_entries {
             let to_remove = self.max_entries / 2;
-            let mut entries: Vec<_> = prices.iter().collect();
-            entries.sort_by_key(|(_, entry)| entry.age_seconds());
+            let mut entries: Vec<_> = prices.iter().map(|(k, v)| (*k, v.age_seconds())).collect();
+            entries.sort_by_key(|(_, age)| *age);
 
-            for (key, _) in entries.iter().take(to_remove) {
-                prices.remove(*key);
+            for (key, _) in entries.into_iter().take(to_remove) {
+                prices.remove(&key);
             }
         }
 
-        prices.insert(pair.clone(), CacheEntry::new(price));
+        prices.insert(pair, CacheEntry::new(price));
         debug!("Cached price for {:?}", pair);
         Ok(())
     }
 
     /// Get cached orderbook if available and not expired.
     pub fn get_orderbook(&self, pair: &TokenPair) -> MarketDataResult<Option<OrderBook>> {
-        let orderbooks = self.orderbooks.read()
+        let orderbooks = self
+            .orderbooks
+            .read()
             .map_err(|_| MarketDataError::CacheError("Lock poisoned".to_string()))?;
 
         if let Some(entry) = orderbooks.get(pair) {
@@ -109,32 +113,39 @@ impl MarketDataCache {
 
     /// Cache an orderbook update.
     pub fn set_orderbook(&self, pair: TokenPair, book: OrderBook) -> MarketDataResult<()> {
-        let mut orderbooks = self.orderbooks.write()
+        let mut orderbooks = self
+            .orderbooks
+            .write()
             .map_err(|_| MarketDataError::CacheError("Lock poisoned".to_string()))?;
 
         // Simple eviction: clear half of entries if at max capacity
         if orderbooks.len() >= self.max_entries {
             let to_remove = self.max_entries / 2;
-            let mut entries: Vec<_> = orderbooks.iter().collect();
-            entries.sort_by_key(|(_, entry)| entry.age_seconds());
+            let mut entries: Vec<_> = orderbooks
+                .iter()
+                .map(|(k, v)| (*k, v.age_seconds()))
+                .collect();
+            entries.sort_by_key(|(_, age)| *age);
 
-            for (key, _) in entries.iter().take(to_remove) {
-                orderbooks.remove(*key);
+            for (key, _) in entries.into_iter().take(to_remove) {
+                orderbooks.remove(&key);
             }
         }
 
-        orderbooks.insert(pair.clone(), CacheEntry::new(book));
+        orderbooks.insert(pair, CacheEntry::new(book));
         debug!("Cached orderbook for {:?}", pair);
         Ok(())
     }
 
     /// Clear all cached data.
     pub fn clear(&self) -> MarketDataResult<()> {
-        self.prices.write()
+        self.prices
+            .write()
             .map_err(|_| MarketDataError::CacheError("Lock poisoned".to_string()))?
             .clear();
 
-        self.orderbooks.write()
+        self.orderbooks
+            .write()
             .map_err(|_| MarketDataError::CacheError("Lock poisoned".to_string()))?
             .clear();
 
@@ -144,10 +155,14 @@ impl MarketDataCache {
 
     /// Get cache statistics.
     pub fn stats(&self) -> MarketDataResult<CacheStats> {
-        let prices = self.prices.read()
+        let prices = self
+            .prices
+            .read()
             .map_err(|_| MarketDataError::CacheError("Lock poisoned".to_string()))?;
 
-        let orderbooks = self.orderbooks.read()
+        let orderbooks = self
+            .orderbooks
+            .read()
             .map_err(|_| MarketDataError::CacheError("Lock poisoned".to_string()))?;
 
         Ok(CacheStats {
@@ -184,9 +199,9 @@ mod tests {
     fn test_price_caching() {
         let cache = MarketDataCache::new(60, 30);
         let pair = TokenPair::new(Pubkey::new_unique(), Pubkey::new_unique());
-        let price = Price::new(100.0, pair.clone(), 0.95);
+        let price = Price::new(100.0, pair, 0.95);
 
-        cache.set_price(pair.clone(), price.clone()).unwrap();
+        cache.set_price(pair, price).unwrap();
 
         let cached = cache.get_price(&pair).unwrap();
         assert!(cached.is_some());
@@ -195,11 +210,11 @@ mod tests {
 
     #[test]
     fn test_cache_expiration() {
-        let cache = MarketDataCache::new(0, 0);  // Immediate expiration
+        let cache = MarketDataCache::new(0, 0); // Immediate expiration
         let pair = TokenPair::new(Pubkey::new_unique(), Pubkey::new_unique());
-        let price = Price::new(100.0, pair.clone(), 0.95);
+        let price = Price::new(100.0, pair, 0.95);
 
-        cache.set_price(pair.clone(), price).unwrap();
+        cache.set_price(pair, price).unwrap();
 
         // Should be expired immediately
         let cached = cache.get_price(&pair).unwrap();
@@ -210,9 +225,9 @@ mod tests {
     fn test_orderbook_caching() {
         let cache = MarketDataCache::new(60, 30);
         let pair = TokenPair::new(Pubkey::new_unique(), Pubkey::new_unique());
-        let book = OrderBook::new(pair.clone(), vec![(100.0, 1000)], vec![(101.0, 1000)]);
+        let book = OrderBook::new(pair, vec![(100.0, 1000)], vec![(101.0, 1000)]);
 
-        cache.set_orderbook(pair.clone(), book.clone()).unwrap();
+        cache.set_orderbook(pair, book).unwrap();
 
         let cached = cache.get_orderbook(&pair).unwrap();
         assert!(cached.is_some());
@@ -222,9 +237,9 @@ mod tests {
     fn test_cache_clear() {
         let cache = MarketDataCache::new(60, 30);
         let pair = TokenPair::new(Pubkey::new_unique(), Pubkey::new_unique());
-        let price = Price::new(100.0, pair.clone(), 0.95);
+        let price = Price::new(100.0, pair, 0.95);
 
-        cache.set_price(pair.clone(), price).unwrap();
+        cache.set_price(pair, price).unwrap();
         let stats = cache.stats().unwrap();
         assert_eq!(stats.total_entries, 1);
 

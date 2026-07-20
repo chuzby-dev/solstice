@@ -67,7 +67,10 @@ mod tests {
     #[test]
     fn test_result_type() {
         let ok: Result<i32> = Ok(42);
-        assert_eq!(ok.unwrap(), 42);
+        match ok {
+            Ok(value) => assert_eq!(value, 42),
+            Err(_) => panic!("expected Ok"),
+        }
 
         let err: Result<i32> = Err(SolsticeError::NotFound("test".to_string()));
         assert!(err.is_err());

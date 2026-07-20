@@ -1,6 +1,5 @@
 //! Transaction simulation and validation.
 
-use crate::error::{BlockchainError, BlockchainResult};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -34,10 +33,7 @@ pub struct SimulationResult {
 
 impl SimulationResult {
     /// Create a successful simulation result.
-    pub fn success(
-        logs: Vec<String>,
-        compute_units_consumed: u64,
-    ) -> Self {
+    pub fn success(logs: Vec<String>, compute_units_consumed: u64) -> Self {
         SimulationResult {
             success: true,
             logs,
@@ -183,10 +179,8 @@ mod tests {
 
     #[test]
     fn test_simulation_failure() {
-        let result = SimulationResult::failure(
-            "Program failed".to_string(),
-            vec!["Error log".to_string()],
-        );
+        let result =
+            SimulationResult::failure("Program failed".to_string(), vec!["Error log".to_string()]);
         assert!(!result.success);
         assert!(result.has_error());
         assert_eq!(result.error_message(), Some("Program failed"));

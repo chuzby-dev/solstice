@@ -1,10 +1,10 @@
 //! Core data types for Solstice trading platform.
 
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use chrono::{DateTime, Utc, Duration};
 use solana_sdk::pubkey::Pubkey;
-use uuid::Uuid;
 use std::collections::HashMap;
+use uuid::Uuid;
 
 /// Unique identifier for a position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -24,7 +24,7 @@ impl Default for PositionId {
 }
 
 /// Token pair for trading (e.g., SOL/USDC).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TokenPair {
     /// Base token mint address.
     pub base: Pubkey,
@@ -41,7 +41,12 @@ impl TokenPair {
 
 impl std::fmt::Display for TokenPair {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}/{}", &self.base.to_string()[0..8], &self.quote.to_string()[0..8])
+        write!(
+            f,
+            "{}/{}",
+            &self.base.to_string()[0..8],
+            &self.quote.to_string()[0..8]
+        )
     }
 }
 
@@ -65,7 +70,7 @@ impl Price {
             value,
             pair,
             timestamp: Utc::now(),
-            confidence: confidence.max(0.0).min(1.0),
+            confidence: confidence.clamp(0.0, 1.0),
         }
     }
 
@@ -185,16 +190,12 @@ pub enum SignalType {
 
 impl Signal {
     /// Create a new signal.
-    pub fn new(
-        strategy: String,
-        signal_type: SignalType,
-        confidence: f64,
-    ) -> Self {
+    pub fn new(strategy: String, signal_type: SignalType, confidence: f64) -> Self {
         Signal {
             id: format!("{}", Uuid::new_v4()),
             strategy,
             signal_type,
-            confidence: confidence.max(0.0).min(1.0),
+            confidence: confidence.clamp(0.0, 1.0),
             timestamp: Utc::now(),
             suggested_size: None,
             metadata: serde_json::json!({}),
@@ -228,11 +229,7 @@ pub struct Position {
 
 impl Position {
     /// Create a new position.
-    pub fn new(
-        pair: TokenPair,
-        quantity: i64,
-        entry_price: f64,
-    ) -> Self {
+    pub fn new(pair: TokenPair, quantity: i64, entry_price: f64) -> Self {
         Position {
             id: PositionId::new(),
             pair,
@@ -355,9 +352,7 @@ pub enum MarketEvent {
         timestamp: DateTime<Utc>,
     },
     /// Orderbook update event.
-    OrderbookUpdate {
-        orderbook: OrderBook,
-    },
+    OrderbookUpdate { orderbook: OrderBook },
     /// Liquidity update event.
     LiquidityUpdate {
         pair: TokenPair,
@@ -400,7 +395,7 @@ impl Portfolio {
         let mut concentration = HashMap::new();
         for position in &self.positions {
             let pct = position.current_value() / self.total_value;
-            *concentration.entry(position.pair.clone()).or_insert(0.0) += pct;
+            *concentration.entry(position.pair).or_insert(0.0) += pct;
         }
         concentration
     }
@@ -430,11 +425,7 @@ mod tests {
     #[test]
     fn test_orderbook_spread() {
         let pair = TokenPair::new(Pubkey::new_unique(), Pubkey::new_unique());
-        let book = OrderBook::new(
-            pair,
-            vec![(100.0, 1000)],
-            vec![(101.0, 1000)],
-        );
+        let book = OrderBook::new(pair, vec![(100.0, 1000)], vec![(101.0, 1000)]);
 
         assert_eq!(book.spread(), Some(1.0));
         assert_eq!(book.mid_price(), Some(100.5));
@@ -456,7 +447,7 @@ mod tests {
         let signal = Signal::new(
             "test".to_string(),
             SignalType::Buy { pair },
-            1.5,  // Out of bounds
+            1.5, // Out of bounds
         );
 
         assert_eq!(signal.confidence, 1.0);
@@ -471,7 +462,7 @@ mod tests {
             TradeAction::Buy,
             1000,
             100.0,
-            0.25,  // $0.25 fees on $100k
+            0.25, // $0.25 fees on $100k
         );
 
         // Fees: 0.25 / 100000 * 10000 = 0.025 basis points
@@ -481,7 +472,7 @@ mod tests {
     #[test]
     fn test_serialization() {
         let pair = TokenPair::new(Pubkey::new_unique(), Pubkey::new_unique());
-        let position = Position::new(pair.clone(), 100, 100.0);
+        let position = Position::new(pair, 100, 100.0);
 
         let json = serde_json::to_string(&position).unwrap();
         let deserialized: Position = serde_json::from_str(&json).unwrap();
