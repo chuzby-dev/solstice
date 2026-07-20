@@ -242,6 +242,69 @@ Phase 2.3/3 — flagged to the user rather than assumed.
 
 ---
 
+## [0.1.0-alpha] - 2026-07-20 (Phase 2.3 assessment + Phase 3.1)
+
+### Phase 2.3 - Secondary DEXes: assessed, not implemented
+
+Checked Meteora and Phoenix before writing code. Phoenix's only available
+crates (`phoenix-sdk`, `phoenix-v1`) are pinned to Solana SDK 1.14.x — same
+blocked class as OpenBook. Meteora's `meteora-dlmm-sdk` is actively
+maintained and solana-sdk-2.x-era (would need the same `solana-pubkey`
+byte-conversion pattern used for Orca), but unlike Orca it's *only*
+account/instruction layout generated from the IDL — there's no
+accompanying math crate for DLMM's bin-walking swap algorithm the way
+`orca_whirlpools_core` exists for Orca's concentrated-liquidity math.
+Implementing it correctly would mean hand-rolling that algorithm from
+memory with no reference to verify against, the same risk avoided for
+OpenBook/Phoenix/Raydium's and Orca's swap instructions. Not attempted.
+Jupiter + Raydium + Orca quoting is where Phase 2 stands.
+
+### Phase 3.1 - Strategy Framework ✅ COMPLETE
+
+New `solstice-strategy` crate, reusing `solstice-core`'s existing domain
+types (`Signal`, `SignalType`, `Position`, `OrderBook`, `Price`,
+`TokenPair`) rather than defining a parallel, conflicting set the way
+`docs/STRATEGY_FRAMEWORK.md`'s sketch does.
+
+**One deliberate deviation from the spec**: `StrategyManager` does not
+dynamically load `.so`/`.dll` plugins via `libloading` +
+`extern "C" fn create_strategy()`. Rust has no stable ABI across compiler
+versions, so that pattern typically produces undefined behavior (not a
+clean error) when a plugin is built with a different rustc than the host
+— and this workspace has no compiled plugin binary to validate such
+loading against regardless. `register_strategy` instead takes an
+already-constructed `Arc<dyn Strategy>`; strategies are Rust crates
+compiled into the host (or, for real hot-reload, run out-of-process
+behind an RPC boundary) — the pattern most production Rust plugin
+systems converge on for the same ABI-stability reason. Documented in
+`manager.rs`; dynamic loading can be added later if a real need appears.
+
+**Also adapted, not copied verbatim, from the spec**:
+- `MarketSnapshot.prices` is `HashMap<TokenPair, Vec<Price>>` (one entry
+  per source/DEX), not a single collapsed price per pair — the spec's own
+  `SpreadArbitrageStrategy` example needs multiple price *observations of
+  the same pair* to detect a spread, but its `MarketSnapshot` sketch (one
+  price per token) can't represent that. Its actual example code compares
+  prices of two *different*, unrelated tokens against each other, which
+  isn't arbitrage detection at all.
+- `SimpleMovingAverageStrategy` maintains its own rolling price window
+  internally (`Mutex<VecDeque<f64>>`), fed one point per `evaluate` call
+  — a `MarketSnapshot` is a point-in-time view, so nothing else in the
+  spec's sketch explains where SMA's historical series would come from.
+
+**Delivered**: `Strategy` trait (via `async-trait` for object safety),
+`StrategyManager` (register/unregister with lifecycle hooks, concurrent
+`evaluate_all` via `tokio::spawn` — one strategy panicking or erroring
+doesn't affect the others), `SignalValidator`, `SignalDeduplicator`
+(TTL-based, keyed on signal id), `SignalRanker` (confidence descending),
+and two real reference strategies (`SimpleMovingAverageStrategy`,
+`SpreadArbitrageStrategy`) with actual signal-generating logic, not stubs.
+
+**Ready for**: Phase 3.2 (Fair Value Engine), 3.3 (Statistical
+Arbitrage), or 3.4 (Portfolio Management).
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started

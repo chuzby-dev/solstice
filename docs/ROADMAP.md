@@ -103,12 +103,15 @@ Solstice development follows a phased approach with clear milestones and gates. 
 ### Milestones
 
 **3.1 - Strategy Framework** (Week 13-15)
-- [ ] Strategy trait and plugin system
-- [ ] Strategy loader and registry
-- [ ] Lifecycle management
-- [ ] Example dummy strategy
-- **Dependencies**: 1.1, 2.3
-- **Gate**: Can load and run a simple strategy
+- [x] Strategy trait and plugin system (in-process registration, not
+      dynamic `.so` loading — see docs/CHANGELOG.md for why)
+- [x] Strategy loader and registry
+- [x] Lifecycle management
+- [x] Example dummy strategy (two: SMA crossover, cross-source spread arb)
+- **Dependencies**: 1.1 ✅, 2.3 (not done — proceeded anyway; framework has
+      no hard dependency on DEX integrations, it consumes the same
+      MarketSnapshot/PortfolioState abstractions regardless of source)
+- **Gate**: Can load and run a simple strategy ✅ COMPLETE
 
 **3.2 - Fair Value Engine** (Week 15-17)
 - [ ] Price aggregation logic
