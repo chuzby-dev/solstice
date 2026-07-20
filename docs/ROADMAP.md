@@ -251,12 +251,17 @@ Solstice development follows a phased approach with clear milestones and gates. 
 - **Gate**: Simulated orders realistic
 
 **6.3 - Paper Trading Mode** (Week 40-42)
-- [ ] Live data + simulated execution
-- [ ] Real-time metrics
-- [ ] Seamless live transition
-- [ ] Order simulation in live feed
-- **Dependencies**: 6.1, 6.2
-- **Gate**: Can paper trade without risk
+- [x] Live data + simulated execution
+- [ ] Real-time metrics (console logging only so far; no metrics endpoint)
+- [ ] Seamless live transition (N/A until real execution exists)
+- [x] Order simulation in live feed
+- **Dependencies**: 6.1 (not done), 6.2 (not done) — built directly against
+  live on-chain quotes (Raydium + Orca) instead of a replay engine, per
+  explicit user direction to prioritize a runnable live-data demo over
+  roadmap order; Phase 5 (Jito/MEV) and 6.1/6.2 (event-loop replay engine,
+  simulated slippage/partial fills) are skipped for now, not done
+- **Gate**: Can paper trade without risk ✅ COMPLETE for the live-quote
+  path (`cargo run -p solstice-simulation --bin paper-trade`)
 
 **6.4 - Backtesting Engine** (Week 42-44)
 - [ ] Historical data loading

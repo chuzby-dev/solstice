@@ -1,0 +1,32 @@
+[package]
+name = "solstice-simulation"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+description = "Paper trading and backtesting simulation engine"
+
+[dependencies]
+solstice-core = { path = "../solstice-core" }
+solstice-blockchain = { path = "../solstice-blockchain" }
+solstice-dex = { path = "../solstice-dex" }
+solstice-strategy = { path = "../solstice-strategy" }
+solstice-execution = { path = "../solstice-execution" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+solana-sdk = { workspace = true }
+dotenvy = "0.15"
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+
+[[bin]]
+name = "paper-trade"
+path = "src/bin/paper_trade.rs"

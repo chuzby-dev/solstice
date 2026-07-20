@@ -418,6 +418,67 @@ storage persistence, or moving to Phase 5+ (Jito/MEV, Simulation, APIs).
 
 ---
 
+## [0.1.0-alpha] - 2026-07-20 (Phase 6.3, out of roadmap order)
+
+### Phase 6.3 - Paper Trading Mode ✅ (live-quote path only)
+
+User explicitly asked to prioritize getting to a runnable live-data demo
+over roadmap sequencing. Skips Phase 5 (Jito/MEV) and 6.1/6.2 (event-loop
+replay engine, simulated slippage/partial fills) entirely — this is a
+live-quote paper-trading loop, not the replay-based simulation engine
+those milestones describe.
+
+New `solstice-simulation` crate with a runnable binary:
+
+```sh
+cargo run -p solstice-simulation --bin paper-trade
+```
+
+`PaperTradingEngine` polls `RaydiumClient`/`OrcaClient` (from Phase 2.2)
+for real on-chain SOL/USDC quotes every 15s, via a user-supplied Helius
+RPC endpoint (`HELIUS_RPC_URL` in a local, gitignored `.env`). Feeds the
+result through `FairValueEngine` and `StatArbEngine` (Phase 3.2/3.3),
+`StrategyManager` (SMA + spread-arb strategies), `PositionSizer` +
+`PreTradeRiskChecker` (Phase 4.1/4.2), and `OrderManager` (Phase 4.4) —
+every piece of the platform built so far, wired end to end against real
+market data, with no real transaction ever built or submitted (fills are
+simulated at the quote's own execution price).
+
+**Verified before wiring in, not trusted from memory**: the Raydium
+(`58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2`) and Orca
+(`Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE`) SOL/USDC pool addresses
+were fetched live via `getAccountInfo` and checked (owner program,
+account size, and — for Orca — the SOL/USDC mint bytes at their expected
+struct offsets) before use, after an initial guessed Raydium address
+turned out to be wrong (returned no account). The correct address came
+from Raydium's own `api-v3.raydium.io` pool-lookup endpoint, then
+independently confirmed on-chain.
+
+**Bugs caught by actually running it against live data** (not something
+review alone would have caught):
+- **Stack overflow** on Windows debug builds: Orca's tick-array value
+  types are several KB each and get moved through a few layers of async
+  calls, overflowing the default ~1MB thread stack. Fixed by running the
+  tokio runtime on a dedicated 16MB-stack thread rather than the default
+  `#[tokio::main]` setup.
+- **Unbounded position accumulation**: the pre-trade position-size check
+  only validated the *new* trade's size against the cap, not size-so-far
+  in that pair (a limitation inherited from `docs/RISK_MANAGEMENT.md`'s
+  own sketch, which has the same gap) — so a strategy re-signaling every
+  tick would re-buy up to the cap every single cycle instead of stopping
+  once the cap was reached. Fixed by tracking existing per-pair exposure
+  and sizing against remaining headroom.
+
+**Known simplifications, not silently hidden**: one position per pair
+(no averaging across multiple entries), instant fills at quoted price (no
+slippage/partial-fill modeling — that's Phase 6.2's job), console-only
+output (no metrics/API endpoint yet — that's Phase 7).
+
+**Ready for**: Phase 7 (REST/WebSocket API) to expose this engine's state,
+then Phase 8 (React dashboard) for the GUI the user is aiming for.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started

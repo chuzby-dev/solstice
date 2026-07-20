@@ -1,0 +1,403 @@
+//! Paper trading engine: polls live on-chain quotes, runs the strategy
+//! framework against them, sizes and risk-checks resulting signals, and
+//! simulates fills — no real transactions are ever built or submitted.
+
+use crate::error::{SimulationError, SimulationResult};
+use chrono::Utc;
+use solana_sdk::pubkey::Pubkey;
+use solstice_core::types::{Position, PositionId, Signal, SignalType, TokenPair};
+use solstice_dex::{DexClient, QuoteRequest};
+use solstice_execution::risk::RiskLimits;
+use solstice_execution::{
+    signal_pair, ExecutionPlan, Fill, OrderManager, PositionSizer, PreTradeRiskChecker,
+    RiskMonitor, RiskParams, StopLossManager, TradeApproval,
+};
+use solstice_strategy::{
+    FairValueEngine, MarketSnapshot, PortfolioState, StatArbEngine, StrategyManager,
+};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tracing::{info, warn};
+
+/// A pair to monitor, and the pool(s) to quote it against.
+#[derive(Debug, Clone)]
+pub struct MonitoredPair {
+    pub pair: TokenPair,
+    pub label: &'static str,
+    pub raydium_pool: Option<Pubkey>,
+    pub orca_pool: Option<Pubkey>,
+    /// Amount of the base token (in its raw base units) to request a quote
+    /// for when sampling price, e.g. `1_000_000_000` for 1 SOL (9 decimals).
+    pub reference_amount: u64,
+}
+
+pub struct PaperTradingConfig {
+    pub poll_interval: Duration,
+    pub initial_capital_usd: f64,
+    pub risk_limits: RiskLimits,
+    pub kelly_fraction: f64,
+    pub default_win_loss_ratio: f64,
+    pub stop_loss_percent: f64,
+}
+
+struct SimPortfolio {
+    positions: HashMap<TokenPair, Position>,
+    cash_usd: f64,
+    realized_pnl_usd: f64,
+}
+
+/// Live paper-trading loop. Owns no private keys and submits nothing
+/// on-chain — every "fill" is simulated using the quote's own execution
+/// price.
+pub struct PaperTradingEngine {
+    raydium: Arc<solstice_dex::RaydiumClient>,
+    orca: Arc<solstice_dex::OrcaClient>,
+    strategy_manager: Arc<StrategyManager>,
+    stat_arb: Arc<StatArbEngine>,
+    fair_value: FairValueEngine,
+    order_manager: Arc<OrderManager>,
+    risk_checker: PreTradeRiskChecker,
+    risk_monitor: RiskMonitor,
+    stop_loss: StopLossManager,
+    portfolio: Mutex<SimPortfolio>,
+    pairs: Vec<MonitoredPair>,
+    config: PaperTradingConfig,
+}
+
+impl PaperTradingEngine {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        raydium: Arc<solstice_dex::RaydiumClient>,
+        orca: Arc<solstice_dex::OrcaClient>,
+        strategy_manager: Arc<StrategyManager>,
+        pairs: Vec<MonitoredPair>,
+        config: PaperTradingConfig,
+    ) -> Self {
+        for p in &pairs {
+            if let Some(pool) = p.raydium_pool {
+                raydium.register_pool(p.pair.base, p.pair.quote, pool);
+            }
+            if let Some(pool) = p.orca_pool {
+                orca.register_pool(p.pair.base, p.pair.quote, pool);
+            }
+        }
+
+        let risk_limits = config.risk_limits;
+        PaperTradingEngine {
+            raydium,
+            orca,
+            strategy_manager,
+            stat_arb: Arc::new(StatArbEngine::new(2.0, 0.85)),
+            fair_value: FairValueEngine::new(Duration::from_secs(30)),
+            order_manager: Arc::new(OrderManager::new()),
+            risk_checker: PreTradeRiskChecker::new(risk_limits),
+            risk_monitor: RiskMonitor::new(risk_limits),
+            stop_loss: StopLossManager::new(config.stop_loss_percent),
+            portfolio: Mutex::new(SimPortfolio {
+                positions: HashMap::new(),
+                cash_usd: config.initial_capital_usd,
+                realized_pnl_usd: 0.0,
+            }),
+            pairs,
+            config,
+        }
+    }
+
+    /// Run forever, polling and evaluating on `config.poll_interval`.
+    pub async fn run(&self) {
+        let mut interval = tokio::time::interval(self.config.poll_interval);
+        loop {
+            interval.tick().await;
+            if let Err(e) = self.tick().await {
+                warn!("Paper trading tick failed: {}", e);
+            }
+        }
+    }
+
+    /// One evaluation cycle: sample prices, evaluate strategies, act on
+    /// resulting signals. Returns the signals produced (post validation/
+    /// dedup/ranking) for callers that want to inspect what happened.
+    pub async fn tick(&self) -> SimulationResult<Vec<Signal>> {
+        let snapshot = self.sample_market().await?;
+        let portfolio_state = self.portfolio_state();
+
+        self.evaluate_stop_losses(&portfolio_state);
+
+        let signals = self
+            .strategy_manager
+            .evaluate_all(&snapshot, &portfolio_state)
+            .await;
+        info!("Evaluated strategies: {} signal(s)", signals.len());
+
+        for signal in &signals {
+            if let Err(e) = self.act_on_signal(signal, &snapshot).await {
+                warn!("Failed to act on signal from {}: {}", signal.strategy, e);
+            }
+        }
+
+        let metrics = self.risk_monitor.update(
+            portfolio_state.positions.len(),
+            portfolio_state.total_value_usd as u64,
+            0,
+            portfolio_state.total_value_usd as u64,
+        );
+        if self.risk_monitor.is_circuit_breaker_tripped() {
+            warn!("Circuit breaker tripped: {:?}", metrics.limits_status);
+        }
+
+        Ok(signals)
+    }
+
+    async fn sample_market(&self) -> SimulationResult<MarketSnapshot> {
+        let mut snapshot = MarketSnapshot::new(0);
+
+        for monitored in &self.pairs {
+            let mut observations = Vec::new();
+
+            if monitored.raydium_pool.is_some() {
+                match self.quote_price(self.raydium.as_ref(), monitored).await {
+                    Ok(price) => {
+                        info!("[{}] Raydium: ${:.4}", monitored.label, price);
+                        observations.push(solstice_core::types::Price::new(
+                            price,
+                            monitored.pair,
+                            0.9,
+                        ));
+                    }
+                    Err(e) => warn!("[{}] Raydium quote failed: {}", monitored.label, e),
+                }
+            }
+
+            if monitored.orca_pool.is_some() {
+                match self.quote_price(self.orca.as_ref(), monitored).await {
+                    Ok(price) => {
+                        info!("[{}] Orca: ${:.4}", monitored.label, price);
+                        observations.push(solstice_core::types::Price::new(
+                            price,
+                            monitored.pair,
+                            0.9,
+                        ));
+                    }
+                    Err(e) => warn!("[{}] Orca quote failed: {}", monitored.label, e),
+                }
+            }
+
+            if !observations.is_empty() {
+                if let Some(fair) = self
+                    .fair_value
+                    .compute_fair_value(monitored.pair, &observations)
+                {
+                    self.stat_arb.observe(monitored.pair, fair.value);
+                }
+                snapshot.prices.insert(monitored.pair, observations);
+            }
+        }
+
+        Ok(snapshot)
+    }
+
+    async fn quote_price(
+        &self,
+        client: &dyn DexClient,
+        monitored: &MonitoredPair,
+    ) -> SimulationResult<f64> {
+        let request = QuoteRequest::new(
+            monitored.pair.base,
+            monitored.pair.quote,
+            monitored.reference_amount,
+            50,
+        );
+        let quote = client.get_quote(&request).await?;
+        if quote.in_amount == 0 {
+            return Err(SimulationError::NoPrice);
+        }
+        // USDC has 6 decimals; base reference_amount is denominated in the
+        // base mint's own smallest units, so this ratio is directly a
+        // "quote units per base unit" price for a USDC-quoted pair.
+        Ok(quote.out_amount as f64 / 1_000_000.0 / (monitored.reference_amount as f64 / 1e9))
+    }
+
+    fn portfolio_state(&self) -> PortfolioState {
+        let portfolio = self.portfolio.lock().expect("portfolio lock poisoned");
+        let position_value: f64 = portfolio
+            .positions
+            .values()
+            .map(|p| p.quantity as f64 * p.current_price)
+            .sum();
+
+        PortfolioState {
+            timestamp: Utc::now(),
+            positions: portfolio.positions.values().cloned().collect(),
+            total_value_usd: portfolio.cash_usd + position_value,
+            available_capital: portfolio.cash_usd.max(0.0) as u64,
+            risk_metrics: solstice_strategy::RiskMetrics::default(),
+        }
+    }
+
+    fn evaluate_stop_losses(&self, portfolio_state: &PortfolioState) {
+        for trigger in self.stop_loss.evaluate_stops(&portfolio_state.positions) {
+            warn!(
+                "Stop loss triggered for position {:?}: {}",
+                trigger.position_id, trigger.reason
+            );
+            self.close_position_by_id(trigger.position_id);
+        }
+    }
+
+    fn close_position_by_id(&self, id: PositionId) {
+        let mut portfolio = self.portfolio.lock().expect("portfolio lock poisoned");
+        if let Some((pair, position)) = portfolio
+            .positions
+            .iter()
+            .find(|(_, p)| p.id == id)
+            .map(|(pair, p)| (*pair, p.clone()))
+        {
+            let pnl = position.unrealized_pnl();
+            portfolio.cash_usd += position.quantity as f64 * position.current_price;
+            portfolio.realized_pnl_usd += pnl;
+            portfolio.positions.remove(&pair);
+            info!(
+                "Closed position {} for pair {:?}, realized P&L ${:.2}",
+                id.0, pair, pnl
+            );
+        }
+    }
+
+    async fn act_on_signal(
+        &self,
+        signal: &Signal,
+        snapshot: &MarketSnapshot,
+    ) -> SimulationResult<()> {
+        let Some(pair) = signal_pair(signal) else {
+            return Ok(());
+        };
+        let Some(price) = snapshot.best_price(&pair) else {
+            return Ok(());
+        };
+
+        let portfolio_state = self.portfolio_state();
+        let existing_position_usd = portfolio_state
+            .positions
+            .iter()
+            .find(|p| p.pair == pair)
+            .map(|p| p.quantity.unsigned_abs() as f64 * p.current_price)
+            .unwrap_or(0.0);
+        let total_exposure_usd = portfolio_state
+            .positions
+            .iter()
+            .map(|p| p.quantity.unsigned_abs() as f64 * p.current_price)
+            .sum::<f64>();
+
+        // Headroom left in this pair before the single-position cap is
+        // reached, so an existing position isn't ignored and topped up
+        // past the limit on every tick.
+        let remaining_position_headroom = (self.config.risk_limits.position.max_single_position_usd
+            as f64
+            - existing_position_usd)
+            .max(0.0);
+        if remaining_position_headroom <= 0.0 {
+            info!(
+                "Signal from {} skipped: {} already at position cap",
+                signal.strategy, pair
+            );
+            return Ok(());
+        }
+
+        let risk_params = RiskParams {
+            portfolio_value_usd: portfolio_state.total_value_usd,
+            available_capital_usd: portfolio_state.available_capital as f64,
+            max_position_usd: remaining_position_headroom,
+            max_position_percent: self.config.risk_limits.position.max_position_percent,
+            kelly_fraction: self.config.kelly_fraction,
+            default_win_loss_ratio: self.config.default_win_loss_ratio,
+        };
+
+        let size_usd = match PositionSizer::calculate_size(signal, &risk_params) {
+            Ok(size) => size,
+            Err(e) => {
+                info!("Signal from {} sized to zero: {}", signal.strategy, e);
+                return Ok(());
+            }
+        };
+
+        let approval = self.risk_checker.check_before_trade(
+            size_usd,
+            portfolio_state.total_value_usd as u64,
+            portfolio_state.positions.len(),
+            total_exposure_usd as u64,
+            0,
+            Some(0.005),
+        );
+
+        if !matches!(approval, TradeApproval::Approved) {
+            info!("Signal from {} rejected: {:?}", signal.strategy, approval);
+            return Ok(());
+        }
+
+        let quote = solstice_dex::Quote {
+            in_amount: size_usd,
+            out_amount: (size_usd as f64 / price.value) as u64,
+            fee_amount: 0,
+            fee_bps: 0,
+            price_impact: 0.0,
+            liquidity: 0,
+            route: vec![],
+            timestamp: Utc::now(),
+        };
+
+        let plan = ExecutionPlan {
+            signal: signal.clone(),
+            pair,
+            quote,
+            size_usd,
+            approval,
+        };
+
+        let order_id = self.order_manager.submit(plan)?;
+        self.order_manager.record_fill(
+            &order_id,
+            Fill {
+                amount: size_usd,
+                price: price.value,
+                fee: 0.0,
+                timestamp: Utc::now(),
+                tx_signature: None,
+            },
+        )?;
+
+        self.open_or_grow_position(pair, signal, size_usd, price.value);
+        info!(
+            "SIMULATED FILL: {} {:?} {} for ${} @ ${:.4}",
+            signal.strategy, signal.signal_type, order_id, size_usd, price.value
+        );
+        Ok(())
+    }
+
+    fn open_or_grow_position(&self, pair: TokenPair, signal: &Signal, size_usd: u64, price: f64) {
+        if price <= 0.0 {
+            return;
+        }
+        let quantity_delta = (size_usd as f64 / price).round() as i64;
+        let signed_delta = match signal.signal_type {
+            SignalType::Sell { .. } => -quantity_delta,
+            _ => quantity_delta,
+        };
+
+        let mut portfolio = self.portfolio.lock().expect("portfolio lock poisoned");
+        portfolio.cash_usd -= size_usd as f64;
+
+        portfolio
+            .positions
+            .entry(pair)
+            .and_modify(|p| {
+                p.quantity += signed_delta;
+                p.current_price = price;
+            })
+            .or_insert_with(|| {
+                let mut position = Position::new(pair, signed_delta, price);
+                position.current_price = price;
+                position
+            });
+    }
+}
