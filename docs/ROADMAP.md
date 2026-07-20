@@ -66,12 +66,12 @@ Solstice development follows a phased approach with clear milestones and gates. 
 ### Milestones
 
 **2.1 - Jupiter Integration** (Week 7-9)
-- [ ] Jupiter API client
-- [ ] Quote fetching
-- [ ] Route finding
-- [ ] Swap instruction building
-- **Dependencies**: 1.2, 1.3
-- **Gate**: Can get best routes and build swap instructions
+- [x] Jupiter API client
+- [x] Quote fetching
+- [x] Route finding
+- [x] Swap instruction building
+- **Dependencies**: 1.2 ✅, 1.3 ✅
+- **Gate**: Can get best routes and build swap instructions ✅ COMPLETE
 
 **2.2 - Primary DEXes** (Week 9-10)
 - [ ] Raydium integration

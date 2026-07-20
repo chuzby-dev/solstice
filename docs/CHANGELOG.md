@@ -109,6 +109,52 @@ storage) all compile, lint, and test clean.
 
 ---
 
+## [0.1.0-alpha] - 2026-07-20 (Phase 2.1 update)
+
+### Phase 2.1 - Jupiter Integration ✅ COMPLETE
+
+New `solstice-dex` crate, following `docs/DEX_INTEGRATIONS.md`'s unified
+`DexClient` trait (via `async-trait` for object safety — `Arc<dyn
+DexClient>` is stored in the aggregator).
+
+**`JupiterClient`**: real Jupiter Quote/Swap-Instructions API v6 integration.
+- `get_quote` calls `GET /quote`, parses the actual response schema
+  (`inAmount`/`outAmount`/`priceImpactPct`/`routePlan[].swapInfo`), and
+  derives `fee_bps` from the summed per-leg `feeAmount`.
+- `build_swap_instructions` calls `POST /swap-instructions` (not the spec
+  doc's fictional `swap.tx_instructions` on `/swap` — the real `/swap`
+  endpoint returns a fully-assembled serialized transaction, not an
+  instruction list; `/swap-instructions` is the endpoint that actually
+  returns one) and decodes compute-budget/setup/swap/cleanup instructions
+  from base64. Address lookup tables in the response are detected and
+  logged but not resolved — building a versioned transaction from them is
+  an execution-layer concern for Phase 4.
+- `subscribe_prices` polls the quote endpoint on an interval (Jupiter has
+  no push feed) rather than leaving the trait method unimplemented.
+
+**`DexAggregator`**: queries all registered `DexClient`s concurrently via
+`tokio::spawn`, picks the highest-output quote, logs and skips DEXes that
+error rather than failing the whole request. `RouteCache` is a real
+TTL+LRU cache (via the `lru` crate) keyed on (input mint, output mint,
+amount), not the spec doc's cache-everything-forever-until-a-manual-clear
+sketch.
+
+**Test strategy**: this environment can reach the crates.io registry but
+not arbitrary hosts (`api.jup.ag` connections fail outright — confirmed
+directly), so live-network tests are `#[ignore]`'d in
+`tests/integration_tests.rs`. Response parsing, fee/slippage math, and
+aggregator selection logic are unit-tested against realistic fixture JSON
+and mock `DexClient` implementations instead.
+
+**Deferred to 2.2/2.3**: Raydium, Orca, OpenBook, Meteora, Phoenix — each
+requires parsing that protocol's own on-chain account layouts (and,
+likely, its own SDK crate with its own dependency-resolution risk, per
+the Yellowstone/solana-sdk experience in Phase 1.2).
+
+**Ready for**: Phase 2.2 (Primary DEXes: Raydium, Orca, OpenBook)
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started

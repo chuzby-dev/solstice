@@ -1,0 +1,27 @@
+[package]
+name = "solstice-dex"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+description = "Unified DEX integration layer: quotes, routing, and swap building"
+
+[dependencies]
+solstice-core = { path = "../solstice-core" }
+solstice-blockchain = { path = "../solstice-blockchain" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+solana-sdk = { workspace = true }
+async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+lru = "0.12"
+base64 = "0.22"
+
+[dev-dependencies]
+tokio-test = { workspace = true }
