@@ -199,6 +199,49 @@ priority — flagged to the user rather than assumed.
 
 ---
 
+## [0.1.0-alpha] - 2026-07-20 (Phase 2.2 continued: Orca)
+
+### Phase 2.2 - Primary DEXes: Orca ✅ (OpenBook not started)
+
+**`OrcaClient`** (`solstice-dex::orca`): real concentrated-liquidity
+(Whirlpools) integration against `orca_whirlpools_client` +
+`orca_whirlpools_core` (both actively maintained, IDL-generated).
+- `get_quote` fetches the pool account and up to three surrounding
+  tick-array accounts (the one containing the current tick, plus its
+  immediate neighbors — arrays that were never initialized on-chain are
+  simply omitted, not treated as an error), then calls
+  `orca_whirlpools_core::swap_quote_by_input_token` to do the actual
+  tick-crossing/fee/sqrt-price math. That math is Orca's own vetted
+  implementation, not a reimplementation of CLMM math here — this
+  integration's job is fetching the right accounts and calling it
+  correctly, not re-deriving the math itself.
+- `get_liquidity` reports both vault balances directly.
+- **Cross-major-version `Pubkey` conversion**: unlike `raydium_amm`,
+  `orca_whirlpools_client` pins `solana-pubkey` on the `3.x` line (one
+  major version past this workspace's `solana-sdk` 2.x, which resolves
+  `solana-pubkey` 2.x) — Cargo treats them as distinct types even though
+  `solana-pubkey` 3.0 is just `pub use solana_address::Address as
+  Pubkey`. Added `solana-pubkey` (v3, renamed to `solana-pubkey-v3` in
+  Cargo.toml to avoid colliding with the workspace's implicit 2.x) as a
+  direct dependency purely so the boundary conversion helpers
+  (`to_sdk_pubkey`/`to_orca_pubkey`, byte-level via `to_bytes()`/`from()`)
+  have a name to reference.
+- `build_swap_instructions` is not implemented, for the same class of
+  reason as Raydium: the on-chain `SwapV2` instruction needs three
+  tick-array accounts in an order that depends on swap direction, and
+  this integration cannot confirm that ordering convention against a
+  reference here. Unlike Raydium's gap (blocked on a stale external
+  crate), this one *could* be closed by finding/testing the right
+  convention — flagged as a follow-up rather than guessed at.
+
+**Not started**: OpenBook (still blocked on the stale `serum_dex`/
+`openbook-v2` dependency problem from the Raydium entry above).
+
+**Ready for**: resolving Orca's swap-instruction ordering, OpenBook, or
+Phase 2.3/3 — flagged to the user rather than assumed.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started

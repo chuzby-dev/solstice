@@ -77,11 +77,13 @@ Solstice development follows a phased approach with clear milestones and gates. 
 - [x] Raydium integration (quotes complete; swap-instruction building
       blocked on a Solana-2.x-compatible OpenBook/Serum market layout, see
       CHANGELOG)
-- [ ] Orca integration
+- [x] Orca integration (quotes complete; swap-instruction building
+      deferred pending a verified tick-array ordering convention, see
+      CHANGELOG)
 - [ ] OpenBook integration
 - [x] Unified DEX interface
 - **Dependencies**: 2.1 ✅
-- **Gate**: Can get quotes from multiple DEXes ✅ PARTIAL (Jupiter + Raydium)
+- **Gate**: Can get quotes from multiple DEXes ✅ PARTIAL (Jupiter + Raydium + Orca)
 
 **2.3 - Secondary DEXes** (Week 11-12)
 - [ ] Meteora integration
