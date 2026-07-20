@@ -20,6 +20,9 @@ pub enum MarketDataError {
     #[error("Subscription error: {0}")]
     SubscriptionError(String),
 
+    #[error("Connection error: {0}")]
+    ConnectionError(String),
+
     #[error("Validation error: {0}")]
     ValidationError(String),
 

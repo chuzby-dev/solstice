@@ -33,10 +33,11 @@ Solstice development follows a phased approach with clear milestones and gates. 
 - [x] Implement Solana RPC client (complete)
 - [x] Setup in-memory cache layer (complete)
 - [x] Build market data manager (complete)
-- [ ] Implement Yellowstone gRPC adapter
-- [ ] Build market data normalizer (partial - manager handles validation)
+- [x] Implement Yellowstone gRPC adapter (complete)
+- [x] Build market data normalizer (manager handles validation; protocol-specific
+      account decoding for individual DEXes/oracles lands with Phase 2)
 - **Dependencies**: 1.1 ✅
-- **Gate**: Can cache and manage market data ✅ PARTIAL COMPLETE
+- **Gate**: Can cache and manage market data ✅ COMPLETE
 
 **1.3 - Blockchain Integration** (Week 4-5)
 - [x] Build RPC abstraction layer (complete - SolanaRpcClient)

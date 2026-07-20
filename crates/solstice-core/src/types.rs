@@ -359,6 +359,16 @@ pub enum MarketEvent {
         available_liquidity: u64,
         timestamp: DateTime<Utc>,
     },
+    /// Raw on-chain account state change, as streamed from a Geyser/Yellowstone
+    /// source before any protocol-specific interpretation (e.g. DEX pool decoding).
+    AccountUpdate {
+        address: Pubkey,
+        owner: Pubkey,
+        lamports: u64,
+        data: Vec<u8>,
+        slot: u64,
+        timestamp: DateTime<Utc>,
+    },
 }
 
 /// Portfolio state snapshot.

@@ -19,6 +19,9 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 solana-sdk = { workspace = true }
+yellowstone-grpc-proto = { version = "12.5.0", default-features = false, features = ["tonic", "tonic-compression"] }
+tonic = { workspace = true, features = ["tls-native-roots"] }
+tokio-stream = "0.1"
 
 [dev-dependencies]
 tokio-test = { workspace = true }

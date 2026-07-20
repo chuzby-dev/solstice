@@ -7,10 +7,12 @@
 pub mod cache;
 pub mod error;
 pub mod manager;
+pub mod yellowstone;
 
 pub use cache::MarketDataCache;
 pub use error::{MarketDataError, MarketDataResult};
 pub use manager::MarketDataManager;
+pub use yellowstone::{AccountFilter, YellowstoneClient, YellowstoneConfig};
 
 #[cfg(test)]
 mod tests {

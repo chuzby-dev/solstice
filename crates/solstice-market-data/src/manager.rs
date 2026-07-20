@@ -90,6 +90,21 @@ impl MarketDataManager {
                 );
                 Ok(())
             }
+
+            MarketEvent::AccountUpdate {
+                address,
+                owner,
+                slot,
+                ..
+            } => {
+                // Raw account state; protocol-specific decoding (DEX pools,
+                // oracles, etc.) is added as those integrations land.
+                debug!(
+                    "Handled account update for {} (owner {}, slot {})",
+                    address, owner, slot
+                );
+                Ok(())
+            }
         }
     }
 

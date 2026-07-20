@@ -6,6 +6,57 @@
 
 ---
 
+## [0.1.0-alpha] - 2026-07-20 (Phase 1.2 update)
+
+### Phase 1.2 - Market Data Ingestion ✅ COMPLETE
+
+**First validated build**: the workspace had never been compiled before this
+pass. Fixed the fallout from that (missing dependency, borrow-checker error,
+an averaging bug and an off-by-one in cache TTL expiration, floating-point
+exact-equality assertions, and assorted clippy lints) so `cargo fmt`,
+`cargo clippy --all-targets --all-features -D warnings`, and
+`cargo test --workspace` all pass clean. See `crates/*` history for detail.
+
+**Solana SDK upgrade**: bumped `solana-sdk`/`solana-client` from 1.18 to 2.2
+workspace-wide. The Yellowstone gRPC crates are version-locked to a Solana
+SDK generation, and the current Yellowstone protocol needs `solana-sdk` 2.x;
+staying on 1.18 would have meant building the streaming adapter against a
+year-old, soon-unsupported combination. `tonic`/`prost` moved to 0.14 to
+match. No API-visible changes in `solstice-core` or `solstice-blockchain`
+beyond the dependency bump.
+
+**Yellowstone gRPC adapter** (`solstice-market-data::yellowstone`):
+- `YellowstoneConfig` - endpoint pool (primary + fallback), timeouts,
+  backoff parameters, bounded delivery channel size, optional `x-token` auth
+- `AccountFilter` - include/exclude/owner-program/min-lamports criteria,
+  translated to the wire-format `SubscribeRequestFilterAccounts` and
+  re-checked client-side against every inbound update (the exclude and
+  min-lamports criteria have no server-side equivalent)
+- `YellowstoneClient` - subscribes over the real `yellowstone-grpc-proto`
+  generated tonic client, with:
+  - automatic reconnection across the endpoint pool with exponential
+    backoff on connection/stream errors
+  - ping/pong keepalive handling
+  - health tracking based on time since the last received message
+  - backpressure via a bounded `tokio::mpsc` channel: a full channel makes
+    ingestion await rather than drop updates or buffer unboundedly
+- `YellowstoneParser` - parses `SubscribeUpdateAccount` into a new
+  `MarketEvent::AccountUpdate` core event (raw account state; protocol-
+  specific decoding for individual DEXes/oracles is added with those
+  integrations in Phase 2)
+- Note: the community `yellowstone-grpc-client` convenience crate assumes a
+  Unix target (`tokio::net::UnixStream`) and does not build on Windows, so
+  the adapter is built directly on `yellowstone-grpc-proto` + `tonic`
+  instead of that wrapper.
+- Windows build note: `solana-secp256r1-program` (pulled in by `solana-sdk`
+  2.x) links against OpenSSL; building on Windows requires OpenSSL
+  installed with `OPENSSL_DIR`/`OPENSSL_LIB_DIR`/`OPENSSL_INCLUDE_DIR` set
+  (this environment uses the `ShiningLight.OpenSSL.Dev` winget package).
+
+**Ready for**: Phase 1.4 (Storage Infrastructure)
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started
