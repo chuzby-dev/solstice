@@ -48,14 +48,14 @@ Solstice development follows a phased approach with clear milestones and gates. 
 - **Gate**: Can build, simulate, and submit transactions ✅ COMPLETE
 
 **1.4 - Storage Infrastructure** (Week 5-6)
-- [ ] PostgreSQL schema design
-- [ ] TimescaleDB setup
-- [ ] Redis cache integration
-- [ ] Data access layer
-- **Dependencies**: 1.1
-- [ ] **Gate**: Can persist and query market data
+- [x] PostgreSQL schema design
+- [x] TimescaleDB setup
+- [x] Redis cache integration
+- [x] Data access layer
+- **Dependencies**: 1.1 ✅
+- **Gate**: Can persist and query market data ✅ COMPLETE
 
-**Phase 1 Gate**: All core infrastructure working; simple integration tests passing.
+**Phase 1 Gate**: All core infrastructure working; simple integration tests passing. ✅ COMPLETE
 
 ---
 

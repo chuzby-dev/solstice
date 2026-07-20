@@ -1,0 +1,34 @@
+[package]
+name = "solstice-storage"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+description = "PostgreSQL/TimescaleDB and Redis persistence layer"
+
+[dependencies]
+solstice-core = { path = "../solstice-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+solana-sdk = { workspace = true }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "postgres",
+    "chrono",
+    "uuid",
+    "migrate",
+    "macros",
+    "derive",
+] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+
+[dev-dependencies]
+tokio-test = { workspace = true }

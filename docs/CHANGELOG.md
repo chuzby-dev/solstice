@@ -57,6 +57,58 @@ beyond the dependency bump.
 
 ---
 
+## [0.1.0-alpha] - 2026-07-20 (Phase 1.4 update)
+
+### Phase 1.4 - Storage Infrastructure ✅ COMPLETE — Phase 1 gate reached
+
+New `solstice-storage` crate. `docs/DATABASE.md` and
+`docs/REDIS_ARCHITECTURE.md` referenced by `WORKSPACE.md` don't exist yet,
+so the schema and cache API below were designed from `WORKSPACE.md`'s
+`solstice-storage` summary (public API shape, responsibilities, key
+components) rather than a detailed spec.
+
+**Schema** (`migrations/0001_init.sql`, applied via `sqlx::migrate!`):
+- `market_snapshots` — time-series price observations, hypertable on `time`
+- `trades` — completed trade records
+- `position_updates` — position state history (one row per recorded update)
+- `account_snapshots` — raw Yellowstone account state, hypertable on `time`
+- `TimescaleDB` extension is enabled and hypertables created when available;
+  falls back to ordinary tables if the extension isn't installed, so the
+  migration doesn't hard-fail against a plain Postgres.
+
+**`StoragePool`** (Postgres/TimescaleDB, via `sqlx`):
+- `save_market_snapshot` / `get_market_data(base, quote, TimeRange)`
+- `save_trade` / (trade lookups go through `get_market_data` today; a
+  dedicated trade query surface lands with the execution engine in Phase 4)
+- `save_position_update` / `get_position_history(PositionId)`
+- `save_account_snapshot` / `get_latest_account_snapshot`
+- Runtime (non-macro) `sqlx::query`/`query_as`, not `query!`, so the crate
+  builds without a live `DATABASE_URL` at compile time.
+
+**`CacheManager`** (Redis, via `redis` + `ConnectionManager`):
+- `get`/`set`/`set_default_ttl`/`delete`/`exists`, `get_json`/`set_json`
+  convenience wrappers, `publish` for pub/sub, key-prefix namespacing.
+
+**Row/domain conversions** (`models.rs`): `u64` core fields (token
+quantities, lamports) convert to Postgres `BIGINT` (`i64`) via `TryFrom`,
+returning `StorageError::ValueOutOfRange` instead of truncating silently.
+
+**Test strategy**: this environment has no running Postgres or Redis (Docker
+is installed but the daemon isn't running). Pure logic — config builders,
+row/domain conversions, TTL math, error mapping — has real unit test
+coverage. Connection-requiring behavior lives in
+`tests/integration_tests.rs`, `#[ignore]`'d with a doc comment on how to
+spin up local containers and run them (`cargo test -p solstice-storage --
+--ignored`).
+
+**Phase 1 gate reached**: core infrastructure (workspace, core types,
+blockchain RPC/transactions, market data ingestion incl. Yellowstone,
+storage) all compile, lint, and test clean.
+
+**Ready for**: Phase 2 (DEX Integration)
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started

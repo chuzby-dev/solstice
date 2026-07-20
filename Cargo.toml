@@ -3,6 +3,7 @@ members = [
     "crates/solstice-core",
     "crates/solstice-blockchain",
     "crates/solstice-market-data",
+    "crates/solstice-storage",
 ]
 resolver = "2"
 
