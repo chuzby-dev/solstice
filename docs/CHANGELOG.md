@@ -305,6 +305,58 @@ Arbitrage), or 3.4 (Portfolio Management).
 
 ---
 
+## [0.1.0-alpha] - 2026-07-20 (Phase 3.2-3.4)
+
+### Phase 3.2 - Fair Value Engine ✅ COMPLETE
+
+`FairValueEngine::compute_fair_value` blends multiple price observations
+of the same pair into one fair-value estimate, weighted by both
+confidence and recency (exponential half-life decay — configurable, so a
+short half-life trusts only very recent observations and a long one
+treats everything recent-ish equally). Combining several low-confidence
+observations does not itself produce a high-confidence result: output
+confidence is the weight-averaged input confidence, not inflated by
+source count.
+
+### Phase 3.3 - Statistical Arbitrage ✅ (cointegration deferred)
+
+`StatArbEngine` accumulates its own rolling price history per pair (fed
+via `observe`, since — like the SMA strategy — a `MarketSnapshot` is a
+single point in time with nowhere else for a series to live) and detects:
+- **Mean reversion**: current price's z-score against the pair's rolling
+  mean/stddev; opportunities above a configurable threshold.
+- **Correlation**: Pearson correlation between every pair of observed
+  price series; pairs above a configurable threshold are flagged as
+  pairs-trading candidates.
+
+**Cointegration detection** (also named in `WORKSPACE.md`'s summary) is
+not implemented: a correct implementation needs an ADF (Augmented
+Dickey-Fuller) unit-root test, which is easy to get subtly wrong without
+a statistics crate to check the implementation against — the same
+"don't hand-roll unverifiable math" reasoning applied to Meteora's DLMM
+swap algorithm and OpenBook's account layout. Flagged as a follow-up.
+
+### Phase 3.4 - Portfolio Management ✅ COMPLETE
+
+`PortfolioManager` computes per-pair concentration (position value ÷
+total portfolio value) and emits `SignalType::Rebalance` signals for any
+pair exceeding a configurable maximum concentration. Cross-asset
+correlation-based limits (as opposed to plain concentration limits) await
+3.3's deferred cointegration/correlation-stability work — flagged, not
+silently dropped.
+
+**Test note**: `stat_arb`'s correlation test initially used sample data
+that was accidentally perfectly anti-correlated (r = -1.0) rather than
+uncorrelated, which the "uncorrelated pairs aren't flagged" test caught
+immediately — worth calling out since it's exactly the kind of thing a
+statistics implementation needs real test coverage to catch, not just
+code review.
+
+**Ready for**: Phase 4 (Execution & Risk), or returning to the deferred
+cointegration/DEX gaps.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started

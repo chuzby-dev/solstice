@@ -114,28 +114,32 @@ Solstice development follows a phased approach with clear milestones and gates. 
 - **Gate**: Can load and run a simple strategy ✅ COMPLETE
 
 **3.2 - Fair Value Engine** (Week 15-17)
-- [ ] Price aggregation logic
-- [ ] Fair value computation
-- [ ] Multi-source weighting
-- [ ] Time-decay adjustments
-- **Dependencies**: 3.1
-- **Gate**: Can compute fair values consistently
+- [x] Price aggregation logic
+- [x] Fair value computation
+- [x] Multi-source weighting (by confidence)
+- [x] Time-decay adjustments
+- **Dependencies**: 3.1 ✅
+- **Gate**: Can compute fair values consistently ✅ COMPLETE
 
 **3.3 - Statistical Arbitrage** (Week 17-19)
-- [ ] Opportunity detection
-- [ ] Correlation analysis
-- [ ] Mean reversion signals
-- [ ] Signal scoring
-- **Dependencies**: 3.1, 3.2
-- **Gate**: Can identify profitable opportunities
+- [x] Opportunity detection
+- [x] Correlation analysis
+- [x] Mean reversion signals
+- [x] Signal scoring
+- [ ] Cointegration detection (deferred — no vetted ADF/statistics crate
+      to verify against, see CHANGELOG)
+- **Dependencies**: 3.1 ✅, 3.2 ✅
+- **Gate**: Can identify profitable opportunities ✅ COMPLETE (mean
+  reversion + correlation; cointegration deferred)
 
 **3.4 - Portfolio Management** (Week 19-20)
-- [ ] Position tracking
-- [ ] Rebalancing logic
-- [ ] Correlation limits
-- [ ] Portfolio constraints
-- **Dependencies**: 3.1
-- **Gate**: Can manage multi-position portfolio
+- [x] Position tracking (via existing Position/PortfolioState)
+- [x] Rebalancing logic (concentration-triggered rebalance signals)
+- [x] Correlation limits (concentration limits; cross-asset correlation
+      limits await 3.3's deferred cointegration work)
+- [x] Portfolio constraints (max concentration per pair)
+- **Dependencies**: 3.1 ✅
+- **Gate**: Can manage multi-position portfolio ✅ COMPLETE
 
 **Phase 3 Gate**: Strategies can run in simulation and identify opportunities.
 
