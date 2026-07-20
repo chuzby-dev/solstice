@@ -6,6 +6,45 @@
 
 ---
 
+## [0.1.0-alpha] - 2026-07-20
+
+### Implementation Started
+
+**Phase 1.1 - Workspace Setup & Core Types** ✅ COMPLETE
+
+Core Infrastructure Implementation:
+- Rust workspace with multi-crate architecture
+- `solstice-core` crate with base types:
+  - `Price` - Asset pricing with confidence scoring
+  - `Position` - Trading position tracking with P&L calculation
+  - `Signal` - Strategy signal types with confidence bounds
+  - `OrderBook` - Market depth data with spread/mid-price calculation
+  - `Trade` - Trade execution records with fee tracking
+  - `Portfolio` - Portfolio state with concentration analysis
+  - `MarketEvent` - Market data event enums
+  - `TokenPair` - Token pair representation
+  - Error types with `Result<T>` aliases
+- Logging infrastructure with `tracing` and structured JSON output
+- GitHub Actions CI/CD pipeline:
+  - Automated testing on push/PR
+  - Cargo fmt validation
+  - Clippy linting with strict warnings
+  - Documentation validation
+- Comprehensive unit and integration tests
+- Production-grade code quality standards
+
+**Deliverables**:
+- 11 core types fully implemented with validation logic
+- ~500 lines of core type definitions
+- ~200 lines of error handling
+- ~100 lines of logging infrastructure
+- 10+ unit tests and 11 integration tests
+- GitHub Actions workflow for CI/CD
+
+**Ready for**: Phase 1.2 (Market Data Ingestion)
+
+---
+
 ## [1.0.0-draft] - 2026-07-20
 
 ### Added (Specification - Foundation)
