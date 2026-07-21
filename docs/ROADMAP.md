@@ -507,14 +507,24 @@ COMPLETE (live paper trading via 6.3, historical backtesting via 6.1/6.2/6.4).
   real, small capital — a 10.4 concern, not 10.3)
 
 **10.4 - Live Deployment** (Week 77-79)
-- [ ] Phased deployment
-- [ ] Small capital initially
+- [x] Small capital initially — 0.01 SOL (~$0.78), user-funded and
+  user-confirmed
+- [x] First trade executed ✅ 0.003 SOL → USDC on mainnet via the new
+  `trade` CLI (`solstice-execution::execute_swap`), confirmed on-chain:
+  `47cnXVup8xVaUsNoC18n1bZYQdCNLW41SxzUUZNizqGTaS6wEPuZCcHF1akoQ2Fj6kN7F5WDxbihcG6WQjizD8m8`
+  — see the changelog entry
+- [ ] Phased deployment — this was one manual, human-confirmed trade, not
+  a deployed/running live strategy
 - [ ] Monitoring intensified
 - [ ] Rapid response team
 - **Dependencies**: 10.3
-- **Gate**: First trades executed
+- **Gate**: First trades executed ✅ for manual execution; automated live
+  execution is explicitly not wired up — `execute_swap` exists as a
+  reusable function specifically so an automated engine could call it
+  later, but nothing does yet, by deliberate design (see changelog)
 
-**Phase 10 Gate**: Trading live with capital deployed.
+**Phase 10 Gate**: Trading live with capital deployed — manual execution
+proven for real; full automated live deployment remains future work.
 
 ---
 

@@ -16,11 +16,16 @@
 //! supply their own `&dyn Signer`.
 
 use crate::error::{ExecutionError, ExecutionResult};
+use crate::jito::{build_tip_instruction, submit_with_fallback, JitoClient, SubmissionOutcome};
 use solana_sdk::hash::Hash;
+use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use solana_sdk::transaction::Transaction;
 use solstice_blockchain::transaction::TransactionBuilder;
+use solstice_blockchain::SolanaRpcClient;
 use solstice_dex::{DexClient, Quote, SwapRequest};
+use std::time::Duration;
 
 /// Solana's maximum transaction size (legacy or versioned), in bytes.
 pub const MAX_TRANSACTION_SIZE: usize = 1232;
@@ -70,6 +75,65 @@ pub async fn build_swap_transaction(
     }
 
     Ok(transaction)
+}
+
+/// End-to-end swap execution: build, sign, and submit a real transaction
+/// (Jito bundle first, falling back to direct RPC — see
+/// `crate::jito::submit_with_fallback`), then confirm it landed.
+///
+/// **This function performs a real, irreversible on-chain action** if
+/// pointed at mainnet with a funded wallet — it does not itself contain
+/// any confirmation gate or dry-run mode. That's deliberate: this is the
+/// reusable core meant to eventually be called from an automated engine,
+/// the same way `PaperTradingEngine::act_on_signal` calls into the paper
+/// order pipeline. Human-in-the-loop confirmation belongs at the call
+/// site — see `solstice-execution`'s `trade` binary, which gates this
+/// behind an explicit typed confirmation before ever calling it for real
+/// funds. A future automated caller would skip that gate by design, once
+/// that's an explicit decision to wire up — not by omission here.
+#[allow(clippy::too_many_arguments)]
+pub async fn execute_swap(
+    jito: &JitoClient,
+    rpc: &SolanaRpcClient,
+    dex: &dyn DexClient,
+    swap: &SwapRequest,
+    quote: &Quote,
+    payer: &Keypair,
+    tip: Option<(Pubkey, u64)>,
+    confirm_timeout: Duration,
+    poll_interval: Duration,
+) -> ExecutionResult<SubmissionOutcome> {
+    let blockhash = rpc
+        .get_latest_blockhash()
+        .await
+        .map_err(|e| ExecutionError::TransactionBuildFailed(e.to_string()))?;
+
+    let swap_transaction =
+        build_swap_transaction(dex, swap, quote, blockhash, &[payer as &dyn Signer]).await?;
+
+    let tip_transaction = match tip {
+        Some((tip_account, lamports)) => {
+            let instruction = build_tip_instruction(&swap.payer, &tip_account, lamports);
+            let tx = TransactionBuilder::new()
+                .payer(swap.payer)
+                .add_instruction(instruction)
+                .build_and_sign(blockhash.to_bytes(), &[payer as &dyn Signer])
+                .map_err(|e| ExecutionError::TransactionBuildFailed(e.to_string()))?;
+            Some(tx)
+        }
+        None => None,
+    };
+
+    submit_with_fallback(
+        jito,
+        rpc,
+        &[swap_transaction],
+        tip_transaction,
+        confirm_timeout,
+        poll_interval,
+    )
+    .await
+    .map_err(|e| ExecutionError::TransactionBuildFailed(e.to_string()))
 }
 
 #[cfg(test)]

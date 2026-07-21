@@ -16,7 +16,13 @@ export function WalletPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <h1 className="text-lg font-semibold">Wallet</h1>
+      <div className="flex items-center gap-3">
+        <h1 className="text-lg font-semibold">Wallet</h1>
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--status-warning)]/40 bg-[var(--status-warning)]/15 px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-[var(--status-warning)]">
+          <span className="h-1.5 w-1.5 rounded-full bg-[var(--status-warning)]" aria-hidden />
+          Live — real funds
+        </span>
+      </div>
       {error && <p className="text-sm text-[var(--status-critical)]">{error}</p>}
 
       {!loading && !wallet && !error && (

@@ -1011,6 +1011,81 @@ vite build` passes clean on the dashboard.
 
 ---
 
+## [0.1.0-alpha] - 2026-07-21 (Manual live swap execution, and a real trade)
+
+### New: `solstice_execution::execute_swap` and the `trade` CLI
+
+`execute_swap` is the reusable core that finally connects everything built
+across Phase 5 and 10.3: build a swap transaction
+(`build_swap_transaction`), submit it (`jito::submit_with_fallback` —
+Jito bundle first, direct RPC fallback), and confirm it landed. It takes a
+`&Keypair` directly rather than a wallet-file path, and performs the
+action immediately with no confirmation gate of its own — that's
+deliberate: this is meant to be the function a future automated engine
+calls directly, the same way `PaperTradingEngine::act_on_signal` calls into
+the paper fill pipeline. Human confirmation is a call-site concern, not
+something baked into the library.
+
+That call site is the new `trade` binary (`cargo run -p solstice-execution
+--bin trade`): loads a wallet file, fetches a real quote, prints the full
+route/amounts/price-impact, then requires the user to type the literal
+word `SEND` (not `y`/`yes` — a typo should abort, not confirm) before ever
+calling `execute_swap`. `--dry-run` builds and signs the real transaction
+locally without submitting, for a zero-risk check that everything's wired
+correctly before committing to a real submission. There is no `--yes`/
+`--force` flag, and none is planned — that would defeat the point.
+
+### First real trade this platform has ever executed
+
+Run by the user, not this agent (the confirmation gate is not something
+this agent will type through, at any dollar amount): 0.003 SOL → USDC on
+mainnet, wallet `CAxwjUEH7XgataKcfihGwzNWswqXsLtVgqpHjVLR9K3f`. The Jito
+bundle path didn't land and the built-in fallback to direct RPC submission
+took over automatically — exactly the behavior `submit_with_fallback` was
+built for in the Phase 5 entry, now observed for real rather than only in
+tests. Confirmed independently via direct RPC calls (not just the CLI's
+own output, which the user couldn't easily copy off a remote-desktop
+session): balance dropped from 0.01 SOL to 0.004937 SOL, and a new SPL
+token account appeared holding 0.234738 USDC. Transaction:
+`47cnXVup8xVaUsNoC18n1bZYQdCNLW41SxzUUZNizqGTaS6wEPuZCcHF1akoQ2Fj6kN7F5WDxbihcG6WQjizD8m8`
+(finalized).
+
+### Dashboard: unambiguous paper vs. live mode
+
+User feedback after seeing the app: it wasn't clear which mode was active,
+and the header text ("Live paper trading — no real transactions") was
+actually a static string that didn't reflect real wallet state at all —
+misleading now that a real wallet with real funds exists. Fixed:
+- A persistent header always shows both a **Paper — simulated funds**
+  badge (blue) and a **Live wallet connected — real funds** badge (amber,
+  only when a wallet is actually configured) or **No live wallet
+  configured** (neutral) — regardless of which page you're on.
+- The sidebar nav is now split into two visually distinct labeled groups,
+  "Simulation (paper)" and "Live," with the Live section using the same
+  amber accent as the wallet badge.
+- The Overview and Wallet pages repeat their respective badge inline, so
+  the mode is unmistakable even from a screenshot of just the content area.
+
+**Verified end to end**: `cargo fmt --check`, `cargo clippy --workspace
+--all-targets --all-features -D warnings`, `cargo test --workspace` (zero
+new failures), and `tsc -b && vite build` all pass clean. The dashboard
+changes were visually verified in a browser against a live server with the
+real wallet configured — both badges render correctly, both nav sections
+render correctly, and the Wallet page's balance/address match the real
+on-chain state after the trade above.
+
+### Housekeeping: `.gitignore` gained wallet-keypair patterns
+
+While staging this commit, found `my-wallet.json` (a real mainnet keypair,
+copied there per this session's own instructions so the user could run the
+CLI from a stable path) sitting untracked at the repo root with no
+`.gitignore` rule protecting it. Added `*wallet*.json`/`*keypair*.json`
+patterns before it could ever be accidentally staged. Flagged here since
+"almost committed a private key" is exactly the kind of near-miss worth a
+permanent record, not a silent fix.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started

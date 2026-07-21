@@ -12,6 +12,14 @@ export function OverviewPage({ events }: { events: EngineEvent[] }) {
 
   return (
     <div className="flex flex-col gap-6">
+      <div className="flex items-center gap-3">
+        <h1 className="text-lg font-semibold">Overview</h1>
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--series-1)]/30 bg-[var(--series-1)]/10 px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-[var(--series-1)]">
+          <span className="h-1.5 w-1.5 rounded-full bg-[var(--series-1)]" aria-hidden />
+          Paper — simulated funds
+        </span>
+      </div>
+
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         <StatTile
           label="Status"

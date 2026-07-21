@@ -17,6 +17,12 @@ Cargo.lock
 .env.local
 .env.*.local
 
+# Wallet keypairs -- never commit real or even devnet-test private key
+# material, wherever it's generated.
+*wallet*.json
+*keypair*.json
+my-wallet.json
+
 # Logs
 *.log
 
