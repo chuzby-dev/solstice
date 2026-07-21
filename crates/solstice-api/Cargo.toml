@@ -1,0 +1,32 @@
+[package]
+name = "solstice-api"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+description = "REST and WebSocket API exposing platform state"
+
+[dependencies]
+solstice-core = { path = "../solstice-core" }
+solstice-execution = { path = "../solstice-execution" }
+solstice-simulation = { path = "../solstice-simulation" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+axum = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+futures-util = "0.3"
+tracing-subscriber = { workspace = true }
+dotenvy = "0.15"
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+
+[[bin]]
+name = "serve"
+path = "src/bin/serve.rs"

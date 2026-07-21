@@ -185,6 +185,17 @@ impl OrderManager {
             })
             .unwrap_or_default()
     }
+
+    /// Every order regardless of status, newest first.
+    pub fn all_orders(&self) -> Vec<Order> {
+        let mut orders: Vec<Order> = self
+            .orders
+            .read()
+            .map(|orders| orders.values().cloned().collect())
+            .unwrap_or_default();
+        orders.sort_by_key(|o| std::cmp::Reverse(o.created_at));
+        orders
+    }
 }
 
 #[cfg(test)]
@@ -323,5 +334,19 @@ mod tests {
         let order = manager.get(&id).unwrap();
         assert_eq!(order.status, OrderStatus::Failed);
         assert_eq!(order.failure_reason, Some("simulation failed".to_string()));
+    }
+
+    #[test]
+    fn test_all_orders_includes_terminal() {
+        let manager = OrderManager::new();
+        let open_id = manager.submit(approved_plan()).unwrap();
+        let closed_id = manager.submit(approved_plan()).unwrap();
+        manager.cancel(&closed_id).unwrap();
+
+        let all = manager.all_orders();
+        let ids: Vec<_> = all.iter().map(|o| o.id.clone()).collect();
+        assert_eq!(all.len(), 2);
+        assert!(ids.contains(&open_id));
+        assert!(ids.contains(&closed_id));
     }
 }

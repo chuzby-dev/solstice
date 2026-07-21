@@ -3,7 +3,8 @@
 //! simulates fills — no real transactions are ever built or submitted.
 
 use crate::error::{SimulationError, SimulationResult};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
+use serde::Serialize;
 use solana_sdk::pubkey::Pubkey;
 use solstice_core::types::{Position, PositionId, Signal, SignalType, TokenPair};
 use solstice_dex::{DexClient, QuoteRequest};
@@ -18,7 +19,61 @@ use solstice_strategy::{
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::broadcast;
 use tracing::{info, warn};
+
+/// Real-time events emitted during each tick, for subscribers such as a
+/// WebSocket server. Broadcasting is best-effort: if there are no
+/// subscribers, or a subscriber is too slow and misses messages, the
+/// engine keeps running unaffected — this channel never blocks trading.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type")]
+pub enum EngineEvent {
+    PriceUpdate {
+        pair_label: String,
+        dex: String,
+        price: f64,
+        timestamp: DateTime<Utc>,
+    },
+    SignalGenerated {
+        strategy: String,
+        pair_label: String,
+        confidence: f64,
+    },
+    OrderFilled {
+        order_id: String,
+        strategy: String,
+        pair_label: String,
+        size_usd: u64,
+        price: f64,
+    },
+    TickCompleted {
+        timestamp: DateTime<Utc>,
+        signal_count: usize,
+    },
+}
+
+/// JSON-friendly snapshot of a single position.
+#[derive(Debug, Clone, Serialize)]
+pub struct PositionSnapshot {
+    pub pair_label: String,
+    pub base_mint: String,
+    pub quote_mint: String,
+    pub quantity: i64,
+    pub entry_price: f64,
+    pub current_price: f64,
+    pub unrealized_pnl: f64,
+}
+
+/// JSON-friendly snapshot of the whole simulated portfolio.
+#[derive(Debug, Clone, Serialize)]
+pub struct PortfolioSnapshot {
+    pub cash_usd: f64,
+    pub realized_pnl_usd: f64,
+    pub unrealized_pnl_usd: f64,
+    pub total_value_usd: f64,
+    pub positions: Vec<PositionSnapshot>,
+}
 
 /// A pair to monitor, and the pool(s) to quote it against.
 #[derive(Debug, Clone)]
@@ -63,6 +118,7 @@ pub struct PaperTradingEngine {
     portfolio: Mutex<SimPortfolio>,
     pairs: Vec<MonitoredPair>,
     config: PaperTradingConfig,
+    events: broadcast::Sender<EngineEvent>,
 }
 
 impl PaperTradingEngine {
@@ -84,6 +140,7 @@ impl PaperTradingEngine {
         }
 
         let risk_limits = config.risk_limits;
+        let (events, _) = broadcast::channel(1024);
         PaperTradingEngine {
             raydium,
             orca,
@@ -101,6 +158,72 @@ impl PaperTradingEngine {
             }),
             pairs,
             config,
+            events,
+        }
+    }
+
+    /// Subscribe to real-time engine events (price updates, signals,
+    /// fills). Each subscriber gets its own receiver; a slow or absent
+    /// subscriber never affects the engine.
+    pub fn subscribe(&self) -> broadcast::Receiver<EngineEvent> {
+        self.events.subscribe()
+    }
+
+    /// The order manager, for callers (e.g. an API server) that want to
+    /// query order/fill history directly.
+    pub fn order_manager(&self) -> &Arc<OrderManager> {
+        &self.order_manager
+    }
+
+    /// Labels of every pair this engine is configured to monitor.
+    pub fn pair_labels(&self) -> Vec<String> {
+        self.pairs.iter().map(|p| p.label.to_string()).collect()
+    }
+
+    /// Whether the daily-loss circuit breaker has tripped (manual reset
+    /// only — see [`RiskMonitor`]).
+    pub fn circuit_breaker_tripped(&self) -> bool {
+        self.risk_monitor.is_circuit_breaker_tripped()
+    }
+
+    fn pair_label(&self, pair: &TokenPair) -> String {
+        self.pairs
+            .iter()
+            .find(|p| p.pair == *pair)
+            .map(|p| p.label.to_string())
+            .unwrap_or_else(|| pair.to_string())
+    }
+
+    /// JSON-friendly snapshot of the current simulated portfolio.
+    pub fn portfolio_snapshot(&self) -> PortfolioSnapshot {
+        let portfolio = self.portfolio.lock().expect("portfolio lock poisoned");
+        let positions: Vec<PositionSnapshot> = portfolio
+            .positions
+            .values()
+            .map(|p| PositionSnapshot {
+                pair_label: self.pair_label(&p.pair),
+                base_mint: p.pair.base.to_string(),
+                quote_mint: p.pair.quote.to_string(),
+                quantity: p.quantity,
+                entry_price: p.entry_price,
+                current_price: p.current_price,
+                unrealized_pnl: p.unrealized_pnl(),
+            })
+            .collect();
+
+        let unrealized_pnl_usd: f64 = positions.iter().map(|p| p.unrealized_pnl).sum();
+        let position_value: f64 = portfolio
+            .positions
+            .values()
+            .map(|p| p.quantity as f64 * p.current_price)
+            .sum();
+
+        PortfolioSnapshot {
+            cash_usd: portfolio.cash_usd,
+            realized_pnl_usd: portfolio.realized_pnl_usd,
+            unrealized_pnl_usd,
+            total_value_usd: portfolio.cash_usd + position_value,
+            positions,
         }
     }
 
@@ -131,6 +254,13 @@ impl PaperTradingEngine {
         info!("Evaluated strategies: {} signal(s)", signals.len());
 
         for signal in &signals {
+            if let Some(pair) = signal_pair(signal) {
+                self.emit(EngineEvent::SignalGenerated {
+                    strategy: signal.strategy.clone(),
+                    pair_label: self.pair_label(&pair),
+                    confidence: signal.confidence,
+                });
+            }
             if let Err(e) = self.act_on_signal(signal, &snapshot).await {
                 warn!("Failed to act on signal from {}: {}", signal.strategy, e);
             }
@@ -146,7 +276,19 @@ impl PaperTradingEngine {
             warn!("Circuit breaker tripped: {:?}", metrics.limits_status);
         }
 
+        self.emit(EngineEvent::TickCompleted {
+            timestamp: Utc::now(),
+            signal_count: signals.len(),
+        });
+
         Ok(signals)
+    }
+
+    /// Broadcast an event to any subscribers. Never fails the caller: a
+    /// channel with no subscribers yields `Err`, which is expected and
+    /// silently ignored.
+    fn emit(&self, event: EngineEvent) {
+        let _ = self.events.send(event);
     }
 
     async fn sample_market(&self) -> SimulationResult<MarketSnapshot> {
@@ -159,6 +301,12 @@ impl PaperTradingEngine {
                 match self.quote_price(self.raydium.as_ref(), monitored).await {
                     Ok(price) => {
                         info!("[{}] Raydium: ${:.4}", monitored.label, price);
+                        self.emit(EngineEvent::PriceUpdate {
+                            pair_label: monitored.label.to_string(),
+                            dex: "Raydium".to_string(),
+                            price,
+                            timestamp: Utc::now(),
+                        });
                         observations.push(solstice_core::types::Price::new(
                             price,
                             monitored.pair,
@@ -173,6 +321,12 @@ impl PaperTradingEngine {
                 match self.quote_price(self.orca.as_ref(), monitored).await {
                     Ok(price) => {
                         info!("[{}] Orca: ${:.4}", monitored.label, price);
+                        self.emit(EngineEvent::PriceUpdate {
+                            pair_label: monitored.label.to_string(),
+                            dex: "Orca".to_string(),
+                            price,
+                            timestamp: Utc::now(),
+                        });
                         observations.push(solstice_core::types::Price::new(
                             price,
                             monitored.pair,
@@ -371,6 +525,13 @@ impl PaperTradingEngine {
             "SIMULATED FILL: {} {:?} {} for ${} @ ${:.4}",
             signal.strategy, signal.signal_type, order_id, size_usd, price.value
         );
+        self.emit(EngineEvent::OrderFilled {
+            order_id,
+            strategy: signal.strategy.clone(),
+            pair_label: self.pair_label(&pair),
+            size_usd,
+            price: price.value,
+        });
         Ok(())
     }
 

@@ -8,6 +8,7 @@ members = [
     "crates/solstice-strategy",
     "crates/solstice-execution",
     "crates/solstice-simulation",
+    "crates/solstice-api",
 ]
 resolver = "2"
 

@@ -282,21 +282,25 @@ Solstice development follows a phased approach with clear milestones and gates. 
 ### Milestones
 
 **7.1 - REST API** (Week 45-47)
-- [ ] Axum HTTP server
-- [ ] Status endpoints
-- [ ] Position endpoints
+- [x] Axum HTTP server
+- [x] Status endpoints
+- [x] Position endpoints (+ trades, performance)
 - [ ] Configuration endpoints
 - [ ] OpenAPI documentation
-- **Dependencies**: 1.1, 4.4
-- **Gate**: REST API functional and documented
+- **Dependencies**: 1.1 ✅, 4.4 ✅
+- **Gate**: REST API functional and documented ✅ PARTIAL (functional;
+  not yet documented via OpenAPI)
 
 **7.2 - WebSocket API** (Week 47-49)
-- [ ] WebSocket server
-- [ ] Market event subscriptions
-- [ ] Position update subscriptions
+- [x] WebSocket server
+- [x] Market event subscriptions (price/signal/fill events, not
+      subscription-filtered — every connected client gets every event)
+- [ ] Position update subscriptions (position state isn't pushed
+      separately; poll `/positions` or derive from `OrderFilled` events)
 - [ ] Real-time metrics
-- **Dependencies**: 7.1, 1.2
-- **Gate**: WebSocket connections work; events stream
+- **Dependencies**: 7.1 ✅, 1.2 ✅
+- **Gate**: WebSocket connections work; events stream ✅ COMPLETE for the
+  core streaming path
 
 **7.3 - Monitoring & Metrics** (Week 49-51)
 - [ ] Prometheus metrics collection

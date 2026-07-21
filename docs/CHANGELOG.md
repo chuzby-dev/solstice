@@ -479,6 +479,57 @@ then Phase 8 (React dashboard) for the GUI the user is aiming for.
 
 ---
 
+## [0.1.0-alpha] - 2026-07-21 (Phase 7)
+
+### Phase 7.1/7.2 - REST + WebSocket API ✅ (core paths; configuration
+endpoints, OpenAPI docs, and metrics not yet done)
+
+New `solstice-api` crate. Second runnable binary:
+
+```sh
+cargo run -p solstice-api --bin serve
+```
+
+Runs the same SOL/USDC paper-trading engine as `paper-trade` (factored
+out into `solstice_simulation::build_sol_usdc_demo_engine` so the two
+binaries share one source of truth for pool addresses/risk config)
+alongside an Axum server on `127.0.0.1:8080` (override via
+`SOLSTICE_API_ADDR`):
+
+- `GET /api/v1/status` — running state, monitored pairs, open position
+  count, total value, circuit-breaker status
+- `GET /api/v1/positions` — current simulated positions
+- `GET /api/v1/trades` — full order history (all statuses, newest first)
+- `GET /api/v1/performance` — cash/realized/unrealized P&L, total value
+- `WS /api/v1/ws` — every `EngineEvent` (price update, signal generated,
+  order filled) as newline-delimited JSON, broadcast to all connected
+  clients
+
+**Response DTOs, not raw internal types**: `solstice-api::dto` defines
+its own response shapes rather than serializing `Order`/`Quote`/
+`TradeApproval` directly — an API response is a contract with clients
+and shouldn't shift just because an internal refactor changes a domain
+type's fields. `PaperTradingEngine` gained `EngineEvent` (broadcast
+channel, best-effort — a slow/absent subscriber never affects trading)
+and `PortfolioSnapshot`/`PositionSnapshot` (JSON-friendly views) to
+support this without leaking its internals either.
+
+**No authentication**: matches `WORKSPACE.md`'s `solstice-api` summary in
+listing auth as a responsibility, but none is implemented — this is a
+local paper-trading demo, not something to expose beyond a trusted
+network. Flagged, not silently omitted.
+
+**Verified end to end, not just built**: ran `serve`, confirmed the
+engine traded (`SpreadArb` filled a real signal off the live Raydium/Orca
+spread), and hit all four REST endpoints with `curl` while it was running
+— `/positions` and `/trades` reflected the actual simulated fill from the
+live session, not fixture data.
+
+**Ready for**: Phase 8 (React/TypeScript dashboard) — the GUI the user is
+aiming for — consuming this API's REST endpoints and WebSocket stream.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started
