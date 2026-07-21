@@ -20,6 +20,13 @@ pub struct LiveTradedPair {
     /// for when sampling price, e.g. `10_000_000` for 0.01 SOL (9
     /// decimals) -- small enough to avoid meaningful price impact.
     pub reference_amount: u64,
+    /// Known Raydium AMM v4 pool for this pair, if any -- pool addresses
+    /// aren't derivable from a mint pair alone, so a pair with `None`
+    /// here simply never wins the best-route comparison against Raydium,
+    /// same as `MonitoredPair` in the paper-trading engine.
+    pub raydium_pool: Option<Pubkey>,
+    /// Known Orca Whirlpool for this pair, if any.
+    pub orca_pool: Option<Pubkey>,
 }
 
 #[derive(Debug, Clone)]

@@ -26,6 +26,11 @@ use tracing::{info, warn};
 
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+// Same addresses used (and independently verified against Raydium's and
+// Orca's own public APIs) in `solstice_simulation::demo`'s paper-trading
+// setup -- see that module for how these were confirmed.
+const RAYDIUM_SOL_USDC_POOL: &str = "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2";
+const ORCA_SOL_USDC_WHIRLPOOL: &str = "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE";
 
 fn main() {
     // See solstice-simulation's paper_trade.rs for why this needs a
@@ -132,6 +137,8 @@ async fn async_main() {
                         quote_mint: usdc,
                         quote_decimals: 6,
                         reference_amount: 10_000_000, // 0.01 SOL
+                        raydium_pool: Pubkey::from_str(RAYDIUM_SOL_USDC_POOL).ok(),
+                        orca_pool: Pubkey::from_str(ORCA_SOL_USDC_WHIRLPOOL).ok(),
                     };
 
                     let live_strategies = Arc::new(StrategyManager::new(StrategyConfig::default()));

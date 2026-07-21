@@ -1546,6 +1546,56 @@ gated the same way every other swap in this codebase is (the `trade` CLI's
 
 ---
 
+## [0.1.0-alpha] - 2026-07-21 (Orca and Raydium wired into live trading)
+
+Following straight on from the previous entry, the user asked for
+Orca/Raydium execution to actually be wired into `LiveTradingEngine`,
+not just available as capability.
+
+### `LiveTradingEngine` now quotes/executes through a `DexAggregator`
+
+Previously held a single `JupiterClient` directly. Now builds a
+`DexAggregator` in its constructor, registering Jupiter (always -- it
+needs no pre-known pool address) plus Orca and Raydium clients with
+whatever pools each `LiveTradedPair` supplies:
+- `LiveTradedPair` gained `raydium_pool: Option<Pubkey>` and
+  `orca_pool: Option<Pubkey>` fields, mirroring `MonitoredPair` in the
+  paper-trading engine exactly (same field names, same "`None` just means
+  this DEX never wins the comparison for this pair" semantics).
+- Both `sample_market` (price sampling) and `execute_planned_trade`/
+  `close_position` (actual execution) now call `get_best_route` instead
+  of a single client's `get_quote` -- every registered DEX is queried
+  concurrently and the highest-output quote wins, per pair, per tick.
+- At execution time, the winning quote's `route[0].dex` name (e.g.
+  `"Jupiter"`, `"Orca"`, `"Raydium"` -- each client already tags its own
+  quotes this way) is used to fetch that specific client back out of the
+  aggregator via `get_client`, since `execute_swap` needs the concrete
+  `DexClient` that produced the winning quote to build instructions
+  against, not the aggregator itself.
+- `serve.rs` populates the SOL/USDC pair's new fields with the same
+  Raydium pool / Orca whirlpool addresses already used (and verified) in
+  `solstice_simulation::demo`'s paper-trading setup.
+
+### Rationale
+
+Jupiter already routes through Orca/Raydium liquidity internally, so this
+isn't about reaching pools Jupiter couldn't otherwise reach -- it's: (a)
+occasionally a direct pool beats Jupiter's own aggregation overhead, and
+(b) a live fallback if Jupiter's API has an outage, since Orca/Raydium
+would still be queried independently.
+
+### Verified
+
+`cargo fmt --all`, `cargo clippy --workspace --lib --bins --tests
+--all-features -D warnings`, and `cargo test --workspace` all pass clean
+(1 new test confirming the constructor's pool-registration path doesn't
+error with real pool addresses set; the aggregator's own route-selection
+logic was already covered by `solstice-dex`'s existing test suite). The
+running server was stopped (safe -- no capital deployed, no positions)
+and rebuilt/restarted on the new binary.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started

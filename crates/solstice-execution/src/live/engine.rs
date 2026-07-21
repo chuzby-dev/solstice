@@ -24,7 +24,10 @@ use serde::Serialize;
 use solana_sdk::pubkey::Pubkey;
 use solstice_blockchain::{SolanaRpcClient, WalletFile};
 use solstice_core::types::{Position, PositionId, Signal, SignalType, TokenPair};
-use solstice_dex::{DexClient, JupiterClient, Quote, QuoteRequest, SwapRequest};
+use solstice_dex::{
+    DexAggregator, DexError, JupiterClient, OrcaClient, Quote, QuoteRequest, RaydiumClient,
+    SwapRequest,
+};
 use solstice_strategy::{MarketSnapshot, PortfolioState, RiskMetrics, StrategyManager};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -143,7 +146,7 @@ pub struct LiveTradingEngine {
     wallet_file: WalletFile,
     rpc: Arc<SolanaRpcClient>,
     jito: JitoClient,
-    dex: JupiterClient,
+    dex: Arc<DexAggregator>,
     strategy_manager: Arc<StrategyManager>,
     order_manager: Arc<OrderManager>,
     risk_checker: PreTradeRiskChecker,
@@ -181,7 +184,28 @@ impl LiveTradingEngine {
             .map_err(|e| ExecutionError::TransactionBuildFailed(e.to_string()))?;
         let jito = JitoClient::new(JitoConfig::default())
             .map_err(|e| ExecutionError::TransactionBuildFailed(e.to_string()))?;
-        let dex = JupiterClient::new()?;
+
+        // Jupiter is always registered (it's the only one that needs no
+        // pre-known pool address); Orca and Raydium are registered too,
+        // with whichever pools each `LiveTradedPair` supplies -- pairs
+        // without a known pool for one of those DEXes just never win the
+        // best-route comparison for that leg, they're not an error.
+        let mut dex = DexAggregator::new();
+        dex.register(Arc::new(JupiterClient::new()?));
+        let raydium = RaydiumClient::new(rpc.clone());
+        let orca = OrcaClient::new(rpc.clone());
+        for pair in &pairs {
+            if let Some(pool) = pair.raydium_pool {
+                raydium.register_pool(pair.base_mint, pair.quote_mint, pool);
+            }
+            if let Some(pool) = pair.orca_pool {
+                orca.register_pool(pair.base_mint, pair.quote_mint, pool);
+            }
+        }
+        dex.register(Arc::new(raydium));
+        dex.register(Arc::new(orca));
+        let dex = Arc::new(dex);
+
         let risk_limits = config.risk_limits;
         let (events, _) = broadcast::channel(1024);
 
@@ -373,7 +397,7 @@ impl LiveTradingEngine {
                     .expect("config lock poisoned")
                     .slippage_bps,
             );
-            match self.dex.get_quote(&quote_request).await {
+            match self.dex.get_best_route(&quote_request).await {
                 Ok(quote) => {
                     let price = pair_price(pair, &quote);
                     self.emit(LiveEvent::PriceUpdate {
@@ -671,9 +695,15 @@ impl LiveTradingEngine {
             None => None,
         };
 
+        // Best-price route across every registered DEX (Jupiter, plus
+        // Orca/Raydium for pairs with a known pool -- see
+        // `LiveTradedPair::orca_pool`/`raydium_pool`), not just Jupiter's
+        // own aggregated route -- occasionally a direct pool beats
+        // Jupiter's routing overhead, and this is a fallback if Jupiter's
+        // API has an outage.
         let quote = match self
             .dex
-            .get_quote(&QuoteRequest::new(
+            .get_best_route(&QuoteRequest::new(
                 swap.input_mint,
                 swap.output_mint,
                 swap.amount,
@@ -692,10 +722,27 @@ impl LiveTradingEngine {
             }
         };
 
+        let winning_dex = match quote
+            .route
+            .first()
+            .ok_or(DexError::NoRoute)
+            .and_then(|segment| self.dex.get_client(&segment.dex))
+        {
+            Ok(client) => client,
+            Err(e) => {
+                self.emit(LiveEvent::OrderFailed {
+                    strategy: signal.strategy.clone(),
+                    pair_label: planned.pair_label.clone(),
+                    reason: format!("failed to resolve winning route's DEX client: {e}"),
+                });
+                return;
+            }
+        };
+
         let outcome = execute_swap(
             &self.jito,
             &self.rpc,
-            &self.dex,
+            winning_dex.as_ref(),
             &swap,
             &quote,
             &keypair,
@@ -891,7 +938,7 @@ impl LiveTradingEngine {
 
         let quote = match self
             .dex
-            .get_quote(&QuoteRequest::new(
+            .get_best_route(&QuoteRequest::new(
                 swap.input_mint,
                 swap.output_mint,
                 swap.amount,
@@ -909,6 +956,22 @@ impl LiveTradingEngine {
             }
         };
 
+        let winning_dex = match quote
+            .route
+            .first()
+            .ok_or(DexError::NoRoute)
+            .and_then(|segment| self.dex.get_client(&segment.dex))
+        {
+            Ok(client) => client,
+            Err(e) => {
+                warn!(
+                    "failed to resolve winning route's DEX client for stop-loss close of {}: {}",
+                    pair_label, e
+                );
+                return;
+            }
+        };
+
         let keypair = match self.wallet_file.load_keypair() {
             Ok(kp) => kp,
             Err(e) => {
@@ -920,7 +983,7 @@ impl LiveTradingEngine {
         let outcome = execute_swap(
             &self.jito,
             &self.rpc,
-            &self.dex,
+            winning_dex.as_ref(),
             &swap,
             &quote,
             &keypair,
@@ -1013,6 +1076,8 @@ mod tests {
             quote_mint: Pubkey::new_unique(),
             quote_decimals: 6,
             reference_amount: 10_000_000,
+            raydium_pool: None,
+            orca_pool: None,
         }
     }
 
@@ -1077,6 +1142,21 @@ mod tests {
 
         std::fs::remove_file(&wallet_path).ok();
         engine
+    }
+
+    #[test]
+    fn test_engine_constructs_with_orca_and_raydium_pools_registered() {
+        // Exercises the constructor path that registers Orca/Raydium
+        // pools into the aggregator (`LiveTradingEngine::new`'s
+        // `raydium.register_pool`/`orca.register_pool` calls) -- this
+        // should succeed and produce a normal, disabled-by-default engine
+        // exactly like a pair with no pools set.
+        let mut pair = test_pair();
+        pair.raydium_pool = Some(Pubkey::new_unique());
+        pair.orca_pool = Some(Pubkey::new_unique());
+
+        let engine = test_engine(pair, 50.0);
+        assert!(!engine.is_enabled());
     }
 
     fn snapshot_with_price(pair: TokenPair, price: f64) -> MarketSnapshot {
