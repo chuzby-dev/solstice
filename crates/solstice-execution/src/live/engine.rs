@@ -1,0 +1,1006 @@
+//! Live trading engine: the same strategy → size → risk-check pipeline as
+//! `solstice_simulation::PaperTradingEngine`, but backed by a real wallet
+//! and (when armed) real on-chain execution via [`crate::execute_swap`].
+//!
+//! **Defaults to disabled.** [`LiveTradingEngine::is_enabled`] starts
+//! `false` and stays that way until [`LiveTradingEngine::enable`] is
+//! called explicitly. While disabled, every tick runs exactly the same
+//! signal-generation and position-sizing logic but emits
+//! [`LiveEvent::WouldTrade`] instead of calling `execute_swap` — so the
+//! dashboard can show "what this would do" before anyone flips it live.
+//! [`LiveTradingEngine::disable`] is synchronous and instant, by design:
+//! turning trading off should never be blocked on anything.
+
+use super::config::{LiveTradedPair, LiveTradingConfig};
+use crate::error::{ExecutionError, ExecutionResult};
+use crate::execute_swap;
+use crate::jito::{JitoClient, JitoConfig};
+use crate::order_manager::{Fill, OrderManager};
+use crate::planner::{signal_pair, ExecutionPlan};
+use crate::position_sizing::{PositionSizer, RiskParams};
+use crate::risk::{PreTradeRiskChecker, StopLossManager, TradeApproval};
+use chrono::{DateTime, Utc};
+use serde::Serialize;
+use solana_sdk::pubkey::Pubkey;
+use solstice_blockchain::{SolanaRpcClient, WalletFile};
+use solstice_core::types::{Position, PositionId, Signal, SignalType, TokenPair};
+use solstice_dex::{DexClient, JupiterClient, Quote, QuoteRequest, SwapRequest};
+use solstice_strategy::{MarketSnapshot, PortfolioState, RiskMetrics, StrategyManager};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::sync::broadcast;
+use tracing::warn;
+
+/// Real-time events from the live engine, for the API/dashboard to stream.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type")]
+pub enum LiveEvent {
+    PriceUpdate {
+        pair_label: String,
+        price: f64,
+        timestamp: DateTime<Utc>,
+    },
+    SignalGenerated {
+        strategy: String,
+        pair_label: String,
+        confidence: f64,
+    },
+    /// Emitted instead of actually trading, whenever the engine is
+    /// disabled. Carries exactly what would have been sized and
+    /// risk-checked, so the dashboard can preview live behavior with zero
+    /// funds risk.
+    WouldTrade {
+        strategy: String,
+        pair_label: String,
+        size_usd: u64,
+        is_buy: bool,
+    },
+    SignalSkipped {
+        strategy: String,
+        pair_label: String,
+        reason: String,
+    },
+    OrderFilled {
+        strategy: String,
+        pair_label: String,
+        size_usd: u64,
+        price: f64,
+        method: String,
+        signature: Option<String>,
+    },
+    OrderFailed {
+        strategy: String,
+        pair_label: String,
+        reason: String,
+    },
+    PositionClosed {
+        pair_label: String,
+        realized_pnl_usd: f64,
+        reason: String,
+    },
+    LiveTradingEnabled,
+    LiveTradingDisabled,
+    MaxCapitalChanged {
+        max_capital_usd: f64,
+    },
+    TickCompleted {
+        timestamp: DateTime<Utc>,
+        signal_count: usize,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LivePositionSnapshot {
+    pub pair_label: String,
+    pub quantity_raw: u64,
+    pub entry_price: f64,
+    pub current_price: f64,
+    pub allocated_usd: f64,
+    pub unrealized_pnl_usd: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveStatusSnapshot {
+    pub enabled: bool,
+    pub wallet_address: String,
+    pub max_capital_usd: f64,
+    pub capital_deployed_usd: f64,
+    pub capital_available_usd: f64,
+    pub realized_pnl_usd: f64,
+    pub positions: Vec<LivePositionSnapshot>,
+}
+
+struct LivePosition {
+    id: PositionId,
+    pair: TokenPair,
+    quantity_raw: u64,
+    entry_price: f64,
+    current_price: f64,
+    allocated_usd: f64,
+    opened_at: DateTime<Utc>,
+}
+
+/// What a signal, once sized and risk-checked, would do -- computed with
+/// no I/O so it's testable without a live network. `None` from
+/// `plan_signal` means "skip this signal" (already covered by [`LiveEvent::SignalSkipped`]
+/// at the call site).
+#[derive(Debug)]
+struct PlannedTrade {
+    pair: TokenPair,
+    pair_label: String,
+    is_buy: bool,
+    size_usd: u64,
+}
+
+pub struct LiveTradingEngine {
+    wallet_pubkey: Pubkey,
+    wallet_file: WalletFile,
+    rpc: Arc<SolanaRpcClient>,
+    jito: JitoClient,
+    dex: JupiterClient,
+    strategy_manager: Arc<StrategyManager>,
+    order_manager: Arc<OrderManager>,
+    risk_checker: PreTradeRiskChecker,
+    stop_loss: StopLossManager,
+    pairs: Vec<LiveTradedPair>,
+    config: Mutex<LiveTradingConfig>,
+    enabled: Arc<AtomicBool>,
+    positions: Mutex<HashMap<TokenPair, LivePosition>>,
+    capital_deployed_usd: Mutex<f64>,
+    realized_pnl_usd: Mutex<f64>,
+    events: broadcast::Sender<LiveEvent>,
+}
+
+impl LiveTradingEngine {
+    pub fn new(
+        wallet_file: WalletFile,
+        rpc: Arc<SolanaRpcClient>,
+        strategy_manager: Arc<StrategyManager>,
+        pairs: Vec<LiveTradedPair>,
+        config: LiveTradingConfig,
+    ) -> ExecutionResult<Self> {
+        let wallet_pubkey = wallet_file
+            .pubkey()
+            .map_err(|e| ExecutionError::TransactionBuildFailed(e.to_string()))?;
+        let jito = JitoClient::new(JitoConfig::default())
+            .map_err(|e| ExecutionError::TransactionBuildFailed(e.to_string()))?;
+        let dex = JupiterClient::new()?;
+        let risk_limits = config.risk_limits;
+        let (events, _) = broadcast::channel(1024);
+
+        Ok(LiveTradingEngine {
+            wallet_pubkey,
+            wallet_file,
+            rpc,
+            jito,
+            dex,
+            strategy_manager,
+            order_manager: Arc::new(OrderManager::new()),
+            risk_checker: PreTradeRiskChecker::new(risk_limits),
+            stop_loss: StopLossManager::new(config.stop_loss_percent),
+            pairs,
+            config: Mutex::new(config),
+            enabled: Arc::new(AtomicBool::new(false)),
+            positions: Mutex::new(HashMap::new()),
+            capital_deployed_usd: Mutex::new(0.0),
+            realized_pnl_usd: Mutex::new(0.0),
+            events,
+        })
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<LiveEvent> {
+        self.events.subscribe()
+    }
+
+    pub fn order_manager(&self) -> &Arc<OrderManager> {
+        &self.order_manager
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.load(Ordering::SeqCst)
+    }
+
+    /// Arm the engine: from the next tick onward, approved signals call
+    /// `execute_swap` for real.
+    pub fn enable(&self) {
+        self.enabled.store(true, Ordering::SeqCst);
+        self.emit(LiveEvent::LiveTradingEnabled);
+    }
+
+    /// Disarm the engine. Synchronous, instant, and always safe to call --
+    /// this never itself trades, so there's nothing to wait on.
+    pub fn disable(&self) {
+        self.enabled.store(false, Ordering::SeqCst);
+        self.emit(LiveEvent::LiveTradingDisabled);
+    }
+
+    pub fn set_max_capital_usd(&self, max_capital_usd: f64) {
+        let mut config = self.config.lock().expect("config lock poisoned");
+        config.max_capital_usd = max_capital_usd;
+        drop(config);
+        self.emit(LiveEvent::MaxCapitalChanged { max_capital_usd });
+    }
+
+    fn pair_label(&self, pair: &TokenPair) -> String {
+        self.pairs
+            .iter()
+            .find(|p| p.base_mint == pair.base && p.quote_mint == pair.quote)
+            .map(|p| p.label.to_string())
+            .unwrap_or_else(|| pair.to_string())
+    }
+
+    pub fn status(&self) -> LiveStatusSnapshot {
+        let config = self.config.lock().expect("config lock poisoned");
+        let capital_deployed_usd = *self.capital_deployed_usd.lock().expect("lock poisoned");
+        let positions = self.positions.lock().expect("positions lock poisoned");
+
+        LiveStatusSnapshot {
+            enabled: self.is_enabled(),
+            wallet_address: self.wallet_pubkey.to_string(),
+            max_capital_usd: config.max_capital_usd,
+            capital_deployed_usd,
+            capital_available_usd: (config.max_capital_usd - capital_deployed_usd).max(0.0),
+            realized_pnl_usd: *self.realized_pnl_usd.lock().expect("lock poisoned"),
+            positions: positions
+                .values()
+                .map(|p| LivePositionSnapshot {
+                    pair_label: self.pair_label(&p.pair),
+                    quantity_raw: p.quantity_raw,
+                    entry_price: p.entry_price,
+                    current_price: p.current_price,
+                    allocated_usd: p.allocated_usd,
+                    unrealized_pnl_usd: p.allocated_usd * (p.current_price / p.entry_price - 1.0),
+                })
+                .collect(),
+        }
+    }
+
+    fn emit(&self, event: LiveEvent) {
+        let _ = self.events.send(event);
+    }
+
+    /// Run forever, ticking on `config.poll_interval`.
+    pub async fn run(&self) {
+        loop {
+            let interval = self
+                .config
+                .lock()
+                .expect("config lock poisoned")
+                .poll_interval;
+            tokio::time::sleep(interval).await;
+            if let Err(e) = self.tick().await {
+                warn!("Live trading tick failed: {}", e);
+            }
+        }
+    }
+
+    pub async fn tick(&self) -> ExecutionResult<Vec<Signal>> {
+        let snapshot = self.sample_market().await?;
+        self.evaluate_stop_losses(&snapshot).await;
+
+        let portfolio_state = self.portfolio_state();
+        let signals = self
+            .strategy_manager
+            .evaluate_all(&snapshot, &portfolio_state)
+            .await;
+
+        for signal in &signals {
+            if let Some(pair) = signal_pair(signal) {
+                self.emit(LiveEvent::SignalGenerated {
+                    strategy: signal.strategy.clone(),
+                    pair_label: self.pair_label(&pair),
+                    confidence: signal.confidence,
+                });
+            }
+            self.act_on_signal(signal, &snapshot).await;
+        }
+
+        self.emit(LiveEvent::TickCompleted {
+            timestamp: Utc::now(),
+            signal_count: signals.len(),
+        });
+
+        Ok(signals)
+    }
+
+    async fn sample_market(&self) -> ExecutionResult<MarketSnapshot> {
+        let mut snapshot = MarketSnapshot::new(0);
+
+        for pair in &self.pairs {
+            let quote_request = QuoteRequest::new(
+                pair.base_mint,
+                pair.quote_mint,
+                pair.reference_amount,
+                self.config
+                    .lock()
+                    .expect("config lock poisoned")
+                    .slippage_bps,
+            );
+            match self.dex.get_quote(&quote_request).await {
+                Ok(quote) => {
+                    let price = pair_price(pair, &quote);
+                    self.emit(LiveEvent::PriceUpdate {
+                        pair_label: pair.label.to_string(),
+                        price,
+                        timestamp: Utc::now(),
+                    });
+
+                    let token_pair = TokenPair::new(pair.base_mint, pair.quote_mint);
+                    if let Some(position) = self
+                        .positions
+                        .lock()
+                        .expect("lock poisoned")
+                        .get_mut(&token_pair)
+                    {
+                        position.current_price = price;
+                    }
+
+                    snapshot.prices.insert(
+                        token_pair,
+                        vec![solstice_core::types::Price {
+                            value: price,
+                            pair: token_pair,
+                            timestamp: Utc::now(),
+                            confidence: 0.9,
+                        }],
+                    );
+                }
+                Err(e) => warn!("[{}] failed to fetch live quote: {}", pair.label, e),
+            }
+        }
+
+        Ok(snapshot)
+    }
+
+    fn portfolio_state(&self) -> PortfolioState {
+        let config = self.config.lock().expect("config lock poisoned");
+        let capital_deployed_usd = *self.capital_deployed_usd.lock().expect("lock poisoned");
+        let positions = self.positions.lock().expect("positions lock poisoned");
+
+        PortfolioState {
+            timestamp: Utc::now(),
+            positions: positions
+                .values()
+                .map(|p| Position {
+                    id: p.id,
+                    pair: p.pair,
+                    quantity: p.quantity_raw as i64,
+                    entry_price: p.entry_price,
+                    current_price: p.current_price,
+                    opened_at: p.opened_at,
+                    close_at: None,
+                })
+                .collect(),
+            total_value_usd: config.max_capital_usd,
+            available_capital: ((config.max_capital_usd - capital_deployed_usd).max(0.0)) as u64,
+            risk_metrics: RiskMetrics::default(),
+        }
+    }
+
+    /// Pure decision logic: given a signal and current market/portfolio
+    /// state, decide whether and how much to trade. No I/O, so this is
+    /// fully unit-testable without a live network.
+    fn plan_signal(
+        &self,
+        signal: &Signal,
+        snapshot: &MarketSnapshot,
+    ) -> Result<PlannedTrade, String> {
+        let pair =
+            signal_pair(signal).ok_or_else(|| "signal has no associated pair".to_string())?;
+        let price = snapshot
+            .best_price(&pair)
+            .ok_or_else(|| "no live price available for pair".to_string())?;
+
+        let config = self.config.lock().expect("config lock poisoned");
+        let capital_deployed_usd = *self.capital_deployed_usd.lock().expect("lock poisoned");
+        let positions = self.positions.lock().expect("positions lock poisoned");
+
+        let existing_allocated_usd = positions.get(&pair).map(|p| p.allocated_usd).unwrap_or(0.0);
+        let remaining_headroom = (config.risk_limits.position.max_single_position_usd as f64
+            - existing_allocated_usd)
+            .min(config.max_capital_usd - capital_deployed_usd)
+            .max(0.0);
+        drop(positions);
+
+        if remaining_headroom <= 0.0 {
+            return Err(format!(
+                "{} already at position/capital cap",
+                self.pair_label(&pair)
+            ));
+        }
+
+        let risk_params = RiskParams {
+            portfolio_value_usd: config.max_capital_usd,
+            available_capital_usd: (config.max_capital_usd - capital_deployed_usd).max(0.0),
+            max_position_usd: remaining_headroom,
+            max_position_percent: config.risk_limits.position.max_position_percent,
+            kelly_fraction: config.kelly_fraction,
+            default_win_loss_ratio: config.default_win_loss_ratio,
+        };
+
+        let size_usd = PositionSizer::calculate_size(signal, &risk_params)
+            .map_err(|e| format!("sizing failed: {e}"))?;
+
+        let total_exposure_usd = capital_deployed_usd as u64;
+        let approval = self.risk_checker.check_before_trade(
+            size_usd,
+            config.max_capital_usd as u64,
+            self.positions.lock().expect("lock poisoned").len(),
+            total_exposure_usd,
+            0,
+            Some(0.005),
+        );
+        if !matches!(approval, TradeApproval::Approved) {
+            return Err(format!("risk check rejected: {approval:?}"));
+        }
+
+        let is_buy = !matches!(signal.signal_type, SignalType::Sell { .. });
+        let _ = price;
+        Ok(PlannedTrade {
+            pair,
+            pair_label: self.pair_label(&pair),
+            is_buy,
+            size_usd,
+        })
+    }
+
+    async fn act_on_signal(&self, signal: &Signal, snapshot: &MarketSnapshot) {
+        let Some(pair) = signal_pair(signal) else {
+            return;
+        };
+
+        let planned = match self.plan_signal(signal, snapshot) {
+            Ok(planned) => planned,
+            Err(reason) => {
+                self.emit(LiveEvent::SignalSkipped {
+                    strategy: signal.strategy.clone(),
+                    pair_label: self.pair_label(&pair),
+                    reason,
+                });
+                return;
+            }
+        };
+
+        if !self.is_enabled() {
+            self.emit(LiveEvent::WouldTrade {
+                strategy: signal.strategy.clone(),
+                pair_label: planned.pair_label.clone(),
+                size_usd: planned.size_usd,
+                is_buy: planned.is_buy,
+            });
+            return;
+        }
+
+        self.execute_planned_trade(signal, &planned).await;
+    }
+
+    async fn execute_planned_trade(&self, signal: &Signal, planned: &PlannedTrade) {
+        let live_pair = self
+            .pairs
+            .iter()
+            .find(|p| p.base_mint == planned.pair.base && p.quote_mint == planned.pair.quote);
+        let Some(live_pair) = live_pair else {
+            self.emit(LiveEvent::OrderFailed {
+                strategy: signal.strategy.clone(),
+                pair_label: planned.pair_label.clone(),
+                reason: "pair not configured for live trading".to_string(),
+            });
+            return;
+        };
+
+        let quote_amount_raw =
+            (planned.size_usd as f64 * 10f64.powi(live_pair.quote_decimals as i32)).round() as u64;
+        let slippage_bps = self
+            .config
+            .lock()
+            .expect("config lock poisoned")
+            .slippage_bps;
+
+        let swap = SwapRequest {
+            input_mint: live_pair.quote_mint,
+            output_mint: live_pair.base_mint,
+            amount: quote_amount_raw,
+            payer: self.wallet_pubkey,
+            slippage_bps,
+        };
+
+        let quote = match self
+            .dex
+            .get_quote(&QuoteRequest::new(
+                swap.input_mint,
+                swap.output_mint,
+                swap.amount,
+                slippage_bps,
+            ))
+            .await
+        {
+            Ok(quote) => quote,
+            Err(e) => {
+                self.emit(LiveEvent::OrderFailed {
+                    strategy: signal.strategy.clone(),
+                    pair_label: planned.pair_label.clone(),
+                    reason: format!("failed to fetch execution quote: {e}"),
+                });
+                return;
+            }
+        };
+
+        let keypair = match self.wallet_file.load_keypair() {
+            Ok(kp) => kp,
+            Err(e) => {
+                self.emit(LiveEvent::OrderFailed {
+                    strategy: signal.strategy.clone(),
+                    pair_label: planned.pair_label.clone(),
+                    reason: format!("failed to load wallet key: {e}"),
+                });
+                return;
+            }
+        };
+
+        let tip_lamports = self
+            .config
+            .lock()
+            .expect("config lock poisoned")
+            .tip_lamports;
+        let tip = match tip_lamports {
+            Some(lamports) => match self.jito.get_tip_accounts().await {
+                Ok(accounts) if !accounts.is_empty() => Some((accounts[0], lamports)),
+                _ => None,
+            },
+            None => None,
+        };
+
+        let outcome = execute_swap(
+            &self.jito,
+            &self.rpc,
+            &self.dex,
+            &swap,
+            &quote,
+            &keypair,
+            tip,
+            Duration::from_secs(60),
+            Duration::from_secs(2),
+        )
+        .await;
+
+        match outcome {
+            Ok(outcome) => {
+                let price = quote_price(live_pair, &quote);
+                self.record_fill(planned, live_pair, &quote, price);
+                self.emit(LiveEvent::OrderFilled {
+                    strategy: signal.strategy.clone(),
+                    pair_label: planned.pair_label.clone(),
+                    size_usd: planned.size_usd,
+                    price,
+                    method: format!("{:?}", outcome.method),
+                    signature: outcome.signatures.first().map(|s| s.to_string()),
+                });
+            }
+            Err(e) => {
+                self.emit(LiveEvent::OrderFailed {
+                    strategy: signal.strategy.clone(),
+                    pair_label: planned.pair_label.clone(),
+                    reason: e.to_string(),
+                });
+            }
+        }
+    }
+
+    fn record_fill(
+        &self,
+        planned: &PlannedTrade,
+        live_pair: &LiveTradedPair,
+        quote: &Quote,
+        price: f64,
+    ) {
+        let quantity_raw = quote.out_amount;
+
+        *self.capital_deployed_usd.lock().expect("lock poisoned") += planned.size_usd as f64;
+
+        let plan = ExecutionPlan {
+            signal: Signal::new(
+                "live".to_string(),
+                SignalType::Buy { pair: planned.pair },
+                1.0,
+            ),
+            pair: planned.pair,
+            quote: quote.clone(),
+            size_usd: planned.size_usd,
+            approval: TradeApproval::Approved,
+        };
+        if let Ok(order_id) = self.order_manager.submit(plan) {
+            let _ = self.order_manager.record_fill(
+                &order_id,
+                Fill {
+                    amount: planned.size_usd,
+                    price,
+                    fee: 0.0,
+                    timestamp: Utc::now(),
+                    tx_signature: None,
+                },
+            );
+        }
+
+        let _ = live_pair;
+        self.positions
+            .lock()
+            .expect("lock poisoned")
+            .entry(planned.pair)
+            .and_modify(|p| {
+                p.quantity_raw = p.quantity_raw.saturating_add(quantity_raw);
+                p.allocated_usd += planned.size_usd as f64;
+                p.current_price = price;
+            })
+            .or_insert_with(|| LivePosition {
+                id: PositionId::new(),
+                pair: planned.pair,
+                quantity_raw,
+                entry_price: price,
+                current_price: price,
+                allocated_usd: planned.size_usd as f64,
+                opened_at: Utc::now(),
+            });
+    }
+
+    async fn evaluate_stop_losses(&self, _snapshot: &MarketSnapshot) {
+        let portfolio_state = self.portfolio_state();
+        let triggers = self.stop_loss.evaluate_stops(&portfolio_state.positions);
+
+        for trigger in triggers {
+            self.close_position(trigger.position_id, trigger.reason)
+                .await;
+        }
+    }
+
+    async fn close_position(&self, id: PositionId, reason: String) {
+        let position_info = {
+            let positions = self.positions.lock().expect("lock poisoned");
+            positions
+                .iter()
+                .find(|(_, p)| p.id == id)
+                .map(|(pair, p)| (*pair, p.quantity_raw, p.allocated_usd))
+        };
+        let Some((pair, quantity_raw, allocated_usd)) = position_info else {
+            return;
+        };
+
+        let pair_label = self.pair_label(&pair);
+
+        if !self.is_enabled() {
+            self.emit(LiveEvent::SignalSkipped {
+                strategy: "stop-loss".to_string(),
+                pair_label,
+                reason: format!("would close position ({reason}), live trading disabled"),
+            });
+            return;
+        }
+
+        let live_pair = self
+            .pairs
+            .iter()
+            .find(|p| p.base_mint == pair.base && p.quote_mint == pair.quote);
+        let Some(live_pair) = live_pair else { return };
+
+        let swap = SwapRequest {
+            input_mint: pair.base,
+            output_mint: pair.quote,
+            amount: quantity_raw,
+            payer: self.wallet_pubkey,
+            slippage_bps: self
+                .config
+                .lock()
+                .expect("config lock poisoned")
+                .slippage_bps,
+        };
+
+        let quote = match self
+            .dex
+            .get_quote(&QuoteRequest::new(
+                swap.input_mint,
+                swap.output_mint,
+                swap.amount,
+                swap.slippage_bps,
+            ))
+            .await
+        {
+            Ok(quote) => quote,
+            Err(e) => {
+                warn!(
+                    "failed to fetch stop-loss close quote for {}: {}",
+                    pair_label, e
+                );
+                return;
+            }
+        };
+
+        let keypair = match self.wallet_file.load_keypair() {
+            Ok(kp) => kp,
+            Err(e) => {
+                warn!("failed to load wallet key for stop-loss close: {}", e);
+                return;
+            }
+        };
+
+        let outcome = execute_swap(
+            &self.jito,
+            &self.rpc,
+            &self.dex,
+            &swap,
+            &quote,
+            &keypair,
+            None,
+            Duration::from_secs(60),
+            Duration::from_secs(2),
+        )
+        .await;
+
+        match outcome {
+            Ok(_) => {
+                let exit_value_usd =
+                    quote.out_amount as f64 / 10f64.powi(live_pair.quote_decimals as i32);
+                let realized_pnl = exit_value_usd - allocated_usd;
+                *self.realized_pnl_usd.lock().expect("lock poisoned") += realized_pnl;
+                *self.capital_deployed_usd.lock().expect("lock poisoned") -= allocated_usd;
+                self.positions.lock().expect("lock poisoned").remove(&pair);
+
+                self.emit(LiveEvent::PositionClosed {
+                    pair_label,
+                    realized_pnl_usd: realized_pnl,
+                    reason,
+                });
+            }
+            Err(e) => {
+                warn!("failed to close position for {}: {}", pair_label, e);
+            }
+        }
+    }
+}
+
+fn pair_price(pair: &LiveTradedPair, quote: &Quote) -> f64 {
+    let out = quote.out_amount as f64 / 10f64.powi(pair.quote_decimals as i32);
+    let base_amount = pair.reference_amount as f64 / 10f64.powi(base_decimals_hint(pair) as i32);
+    if base_amount <= 0.0 {
+        0.0
+    } else {
+        out / base_amount
+    }
+}
+
+fn quote_price(pair: &LiveTradedPair, quote: &Quote) -> f64 {
+    // For a buy (quote -> base), price = quote spent / base received.
+    let quote_amount = quote.in_amount as f64 / 10f64.powi(pair.quote_decimals as i32);
+    let base_amount = quote.out_amount as f64 / 10f64.powi(base_decimals_hint(pair) as i32);
+    if base_amount <= 0.0 {
+        0.0
+    } else {
+        quote_amount / base_amount
+    }
+}
+
+fn base_decimals_hint(pair: &LiveTradedPair) -> u8 {
+    pair.base_decimals
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::risk::{
+        ConcentrationLimits, DailyLossLimits, ExposureLimits, OrderLimits, PositionLimits,
+    };
+    use solstice_strategy::StrategyConfig;
+    use std::time::SystemTime;
+
+    fn temp_wallet_path(name: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("solstice-live-engine-test-{name}-{nanos}.json"))
+    }
+
+    fn test_pair() -> LiveTradedPair {
+        LiveTradedPair {
+            label: "TEST/USDC",
+            base_mint: Pubkey::new_unique(),
+            base_decimals: 9,
+            quote_mint: Pubkey::new_unique(),
+            quote_decimals: 6,
+            reference_amount: 10_000_000,
+        }
+    }
+
+    fn test_config(max_capital_usd: f64) -> LiveTradingConfig {
+        LiveTradingConfig {
+            max_capital_usd,
+            risk_limits: crate::risk::RiskLimits {
+                position: PositionLimits {
+                    max_single_position_usd: max_capital_usd as u64,
+                    max_position_percent: 1.0,
+                    min_position_size_usd: 1,
+                    max_open_positions: 5,
+                },
+                daily_loss: DailyLossLimits {
+                    max_daily_loss_usd: 1_000_000,
+                    max_daily_loss_percent: 1.0,
+                },
+                exposure: ExposureLimits {
+                    max_total_exposure_usd: 1_000_000,
+                    max_leverage: 10.0,
+                },
+                concentration: ConcentrationLimits {
+                    max_single_asset_percent: 1.0,
+                },
+                order: OrderLimits {
+                    max_order_size_usd: 1_000_000,
+                    max_slippage_percent: 0.5,
+                },
+            },
+            kelly_fraction: 0.5,
+            default_win_loss_ratio: 2.0,
+            stop_loss_percent: 0.1,
+            slippage_bps: 50,
+            poll_interval: Duration::from_secs(3600),
+            tip_lamports: None,
+        }
+    }
+
+    /// Builds a real `LiveTradingEngine` against a throwaway (never
+    /// funded, never used) local wallet file and an unreachable RPC
+    /// endpoint -- fine for testing `plan_signal`, `enable`/`disable`,
+    /// and status reporting, none of which touch the network.
+    fn test_engine(pair: LiveTradedPair, max_capital_usd: f64) -> LiveTradingEngine {
+        let wallet_path = temp_wallet_path("engine");
+        let wallet_file = WalletFile::at(&wallet_path);
+        wallet_file.generate().unwrap();
+
+        let rpc = Arc::new(
+            SolanaRpcClient::with_endpoints(vec!["http://127.0.0.1:1".to_string()]).unwrap(),
+        );
+        let strategy_manager = Arc::new(StrategyManager::new(StrategyConfig::default()));
+
+        let engine = LiveTradingEngine::new(
+            wallet_file,
+            rpc,
+            strategy_manager,
+            vec![pair],
+            test_config(max_capital_usd),
+        )
+        .unwrap();
+
+        std::fs::remove_file(&wallet_path).ok();
+        engine
+    }
+
+    fn snapshot_with_price(pair: TokenPair, price: f64) -> MarketSnapshot {
+        let mut snapshot = MarketSnapshot::new(0);
+        snapshot.prices.insert(
+            pair,
+            vec![solstice_core::types::Price::new(price, pair, 0.9)],
+        );
+        snapshot
+    }
+
+    fn buy_signal(pair: TokenPair, confidence: f64) -> Signal {
+        Signal::new("Test".to_string(), SignalType::Buy { pair }, confidence)
+    }
+
+    #[test]
+    fn test_disabled_by_default() {
+        let pair = test_pair();
+        let engine = test_engine(pair, 50.0);
+        assert!(!engine.is_enabled());
+    }
+
+    #[test]
+    fn test_enable_disable_toggle_and_events() {
+        let pair = test_pair();
+        let engine = test_engine(pair, 50.0);
+        let mut events = engine.subscribe();
+
+        engine.enable();
+        assert!(engine.is_enabled());
+        assert!(matches!(
+            events.try_recv(),
+            Ok(LiveEvent::LiveTradingEnabled)
+        ));
+
+        engine.disable();
+        assert!(!engine.is_enabled());
+        assert!(matches!(
+            events.try_recv(),
+            Ok(LiveEvent::LiveTradingDisabled)
+        ));
+    }
+
+    #[test]
+    fn test_set_max_capital_usd_updates_status() {
+        let pair = test_pair();
+        let engine = test_engine(pair, 50.0);
+        assert_eq!(engine.status().max_capital_usd, 50.0);
+
+        engine.set_max_capital_usd(100.0);
+        assert_eq!(engine.status().max_capital_usd, 100.0);
+    }
+
+    #[test]
+    fn test_plan_signal_sizes_within_max_capital() {
+        let pair = test_pair();
+        let token_pair = TokenPair::new(pair.base_mint, pair.quote_mint);
+        let engine = test_engine(pair, 50.0);
+
+        let snapshot = snapshot_with_price(token_pair, 100.0);
+        let signal = buy_signal(token_pair, 0.95);
+
+        let planned = engine.plan_signal(&signal, &snapshot).unwrap();
+        assert!(planned.size_usd as f64 <= 50.0);
+        assert!(planned.is_buy);
+    }
+
+    #[test]
+    fn test_plan_signal_rejects_without_a_price() {
+        let pair = test_pair();
+        let token_pair = TokenPair::new(pair.base_mint, pair.quote_mint);
+        let engine = test_engine(pair, 50.0);
+
+        let empty_snapshot = MarketSnapshot::new(0);
+        let signal = buy_signal(token_pair, 0.95);
+
+        assert!(engine.plan_signal(&signal, &empty_snapshot).is_err());
+    }
+
+    #[test]
+    fn test_plan_signal_rejects_when_capital_fully_deployed() {
+        let pair = test_pair();
+        let token_pair = TokenPair::new(pair.base_mint, pair.quote_mint);
+        let engine = test_engine(pair, 50.0);
+
+        *engine.capital_deployed_usd.lock().unwrap() = 50.0;
+
+        let snapshot = snapshot_with_price(token_pair, 100.0);
+        let signal = buy_signal(token_pair, 0.95);
+
+        let result = engine.plan_signal(&signal, &snapshot);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("cap"));
+    }
+
+    #[test]
+    fn test_status_reflects_capital_deployed_and_available() {
+        let pair = test_pair();
+        let engine = test_engine(pair, 50.0);
+
+        *engine.capital_deployed_usd.lock().unwrap() = 20.0;
+
+        let status = engine.status();
+        assert_eq!(status.capital_deployed_usd, 20.0);
+        assert_eq!(status.capital_available_usd, 30.0);
+    }
+
+    #[tokio::test]
+    async fn test_disabled_engine_never_touches_capital_on_would_trade() {
+        let pair = test_pair();
+        let token_pair = TokenPair::new(pair.base_mint, pair.quote_mint);
+        let engine = test_engine(pair, 50.0);
+        assert!(!engine.is_enabled());
+
+        let snapshot = snapshot_with_price(token_pair, 100.0);
+        let signal = buy_signal(token_pair, 0.95);
+        let mut events = engine.subscribe();
+
+        engine.act_on_signal(&signal, &snapshot).await;
+
+        assert_eq!(*engine.capital_deployed_usd.lock().unwrap(), 0.0);
+        let mut saw_would_trade = false;
+        while let Ok(event) = events.try_recv() {
+            if matches!(event, LiveEvent::WouldTrade { .. }) {
+                saw_would_trade = true;
+            }
+        }
+        assert!(
+            saw_would_trade,
+            "expected a WouldTrade event while disabled"
+        );
+    }
+}

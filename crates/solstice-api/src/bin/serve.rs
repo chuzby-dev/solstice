@@ -1,20 +1,29 @@
-//! Runs the SOL/USDC paper-trading demo engine alongside the REST/
-//! WebSocket API, so a dashboard (or `curl`/a WebSocket client) can watch
-//! it trade in real time.
+//! Runs the SOL/USDC paper-trading demo engine (and, if a wallet is
+//! configured, an automated live-trading engine -- disabled by default)
+//! alongside the REST/WebSocket API.
 //!
 //! ```sh
 //! cargo run -p solstice-api --bin serve
 //! ```
 //!
-//! REST: http://127.0.0.1:8080/api/v1/{status,positions,trades,performance}
-//! WebSocket: ws://127.0.0.1:8080/api/v1/ws
+//! REST: http://127.0.0.1:8080/api/v1/{status,positions,trades,performance,wallet}
+//! Live control: http://127.0.0.1:8080/api/v1/live/{status,enable,disable,config}
+//! WebSocket: ws://127.0.0.1:8080/api/v1/ws (paper), /api/v1/live/ws (live)
 
+use solana_sdk::pubkey::Pubkey;
 use solstice_api::{ApiServer, WalletState};
 use solstice_blockchain::{SolanaRpcClient, WalletFile};
+use solstice_execution::{LiveTradedPair, LiveTradingConfig, LiveTradingEngine};
 use solstice_simulation::build_sol_usdc_demo_engine;
+use solstice_strategy::strategies::sma::SimpleMovingAverageStrategy;
+use solstice_strategy::{StrategyConfig, StrategyManager};
 use std::net::SocketAddr;
+use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{info, warn};
+
+const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
 fn main() {
     // See solstice-simulation's paper_trade.rs for why this needs a
@@ -58,44 +67,98 @@ async fn async_main() {
     let trading_task = tokio::spawn(async move { engine_for_loop.run().await });
 
     // Optional: if a wallet keypair file is configured, expose its public
-    // address and balance read-only via /api/v1/wallet. No private key
-    // material is loaded here -- only the public key, and there is no
-    // endpoint anywhere in this server that can sign or send anything.
-    let wallet = match std::env::var("WALLET_KEYPAIR_PATH") {
-        Ok(path) => {
-            let wallet_file = WalletFile::at(&path);
-            if !wallet_file.exists() {
-                warn!(
-                    "WALLET_KEYPAIR_PATH is set to {path} but no wallet file exists there yet; \
-                     /api/v1/wallet will return 404 until one is generated"
-                );
-                None
-            } else {
-                match wallet_file.pubkey() {
-                    Ok(pubkey) => {
-                        info!("Wallet configured: {pubkey}");
-                        let rpc = Arc::new(
-                            SolanaRpcClient::with_endpoints(vec![rpc_url])
-                                .expect("failed to build wallet RPC client"),
-                        );
-                        Some(WalletState { pubkey, rpc })
+    // address and balance read-only via /api/v1/wallet, and additionally
+    // stand up a live-trading engine (kill switch defaults to OFF --
+    // configuring a wallet alone never causes real trades). No private
+    // key material is loaded at startup -- only the public key; the live
+    // engine loads the signing key from disk itself, transiently, only at
+    // the moment it needs to sign a real transaction.
+    let mut wallet = None;
+    let mut live = None;
+
+    if let Ok(path) = std::env::var("WALLET_KEYPAIR_PATH") {
+        let wallet_file = WalletFile::at(&path);
+        if !wallet_file.exists() {
+            warn!(
+                "WALLET_KEYPAIR_PATH is set to {path} but no wallet file exists there yet; \
+                 /api/v1/wallet and /api/v1/live/* will return 404 until one is generated"
+            );
+        } else {
+            match wallet_file.pubkey() {
+                Ok(pubkey) => {
+                    info!("Wallet configured: {pubkey}");
+                    let rpc = Arc::new(
+                        SolanaRpcClient::with_endpoints(vec![rpc_url.clone()])
+                            .expect("failed to build wallet RPC client"),
+                    );
+                    wallet = Some(WalletState {
+                        pubkey,
+                        rpc: rpc.clone(),
+                    });
+
+                    let sol = Pubkey::from_str(SOL_MINT).expect("SOL_MINT is a valid pubkey");
+                    let usdc = Pubkey::from_str(USDC_MINT).expect("USDC_MINT is a valid pubkey");
+                    let pair = LiveTradedPair {
+                        label: "SOL/USDC",
+                        base_mint: sol,
+                        base_decimals: 9,
+                        quote_mint: usdc,
+                        quote_decimals: 6,
+                        reference_amount: 10_000_000, // 0.01 SOL
+                    };
+
+                    let live_strategies = Arc::new(StrategyManager::new(StrategyConfig::default()));
+                    live_strategies
+                        .register_strategy(Arc::new(SimpleMovingAverageStrategy::new(
+                            solstice_core::types::TokenPair::new(sol, usdc),
+                            5,
+                            20,
+                        )))
+                        .await
+                        .expect("failed to register live SMA strategy");
+
+                    // Reload the wallet file separately: `LiveTradingEngine`
+                    // owns its own `WalletFile` handle (it re-reads the
+                    // keypair from disk only at the moment it signs).
+                    match LiveTradingEngine::new(
+                        WalletFile::at(&path),
+                        rpc,
+                        live_strategies,
+                        vec![pair],
+                        LiveTradingConfig::default(),
+                    ) {
+                        Ok(engine) => {
+                            info!(
+                                "Live trading engine configured (DISABLED by default, max ${:.2} capital cap) -- \
+                                 enable it via POST /api/v1/live/enable",
+                                LiveTradingConfig::default().max_capital_usd
+                            );
+                            live = Some(Arc::new(engine));
+                        }
+                        Err(e) => warn!("Failed to configure live trading engine: {e}"),
                     }
-                    Err(e) => {
-                        warn!("Failed to load wallet at {path}: {e}");
-                        None
-                    }
+                }
+                Err(e) => {
+                    warn!("Failed to load wallet at {path}: {e}");
                 }
             }
         }
-        Err(_) => None,
-    };
+    }
 
-    let server = ApiServer::new(engine, addr, wallet);
+    let live_task = live
+        .clone()
+        .map(|live: Arc<LiveTradingEngine>| tokio::spawn(async move { live.run().await }));
+
+    let server = ApiServer::new(engine, addr, wallet, live);
     let server_task = tokio::spawn(async move {
         if let Err(e) = server.start().await {
             tracing::error!("API server error: {}", e);
         }
     });
 
-    let _ = tokio::join!(trading_task, server_task);
+    if let Some(live_task) = live_task {
+        let _ = tokio::join!(trading_task, server_task, live_task);
+    } else {
+        let _ = tokio::join!(trading_task, server_task);
+    }
 }

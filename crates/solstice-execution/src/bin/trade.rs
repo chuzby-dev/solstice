@@ -19,7 +19,6 @@
 //! against mainnet with zero funds-movement risk.
 
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Signer;
 use solstice_blockchain::{SolanaRpcClient, WalletFile};
 use solstice_dex::{DexClient, JupiterClient, QuoteRequest, SwapRequest};
 use solstice_execution::jito::{JitoClient, JitoConfig};
@@ -234,10 +233,9 @@ async fn main() {
             .get_latest_blockhash()
             .await
             .expect("failed to fetch blockhash");
-        let transaction =
-            build_swap_transaction(&dex, &swap, &quote, blockhash, &[&keypair as &dyn Signer])
-                .await
-                .expect("failed to build swap transaction");
+        let transaction = build_swap_transaction(&dex, &swap, &quote, blockhash, &keypair)
+            .await
+            .expect("failed to build swap transaction");
         let size = bincode::serialize(&transaction).unwrap().len();
         println!(
             "Built and signed a {size}-byte transaction with {} signature(s). Not submitted.",

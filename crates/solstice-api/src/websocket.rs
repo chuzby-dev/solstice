@@ -1,23 +1,43 @@
-//! WebSocket endpoint: streams `EngineEvent`s to connected clients in
-//! real time as newline-delimited JSON text frames.
+//! WebSocket endpoints: stream `EngineEvent`s (paper) or `LiveEvent`s
+//! (live) to connected clients in real time as JSON text frames.
 
 use crate::state::AppState;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
+use serde::Serialize;
+use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
 pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+    let rx = state.engine.subscribe();
+    ws.on_upgrade(move |socket| stream_events(socket, rx))
 }
 
-async fn handle_socket(socket: WebSocket, state: AppState) {
-    let mut rx = state.engine.subscribe();
+pub async fn live_ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+) -> axum::response::Response {
+    match &state.live {
+        Some(live) => {
+            let rx = live.subscribe();
+            ws.on_upgrade(move |socket| stream_events(socket, rx))
+                .into_response()
+        }
+        None => (StatusCode::NOT_FOUND, "no live trading engine configured").into_response(),
+    }
+}
+
+/// Drains (and ignores) inbound client messages so the socket stays
+/// responsive to pings/close frames; both endpoints are publish-only.
+async fn stream_events<T: Serialize + Clone + Send + 'static>(
+    socket: WebSocket,
+    mut rx: broadcast::Receiver<T>,
+) {
     let (mut sender, mut receiver) = socket.split();
 
-    // Drain (and ignore) inbound client messages so the socket stays
-    // responsive to pings/close frames; this endpoint is publish-only.
     let recv_task = tokio::spawn(async move {
         while let Some(Ok(msg)) = receiver.next().await {
             if matches!(msg, Message::Close(_)) {
@@ -34,13 +54,13 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         break;
                     }
                 }
-                Err(e) => warn!("Failed to serialize engine event: {}", e),
+                Err(e) => warn!("Failed to serialize event: {}", e),
             },
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+            Err(broadcast::error::RecvError::Lagged(skipped)) => {
                 debug!("WebSocket client lagged, skipped {} event(s)", skipped);
                 continue;
             }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            Err(broadcast::error::RecvError::Closed) => break,
         }
     }
 

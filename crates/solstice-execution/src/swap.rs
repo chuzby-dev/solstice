@@ -32,7 +32,14 @@ pub const MAX_TRANSACTION_SIZE: usize = 1232;
 
 /// Fetch swap instructions from `dex` for `swap`/`quote`, assemble them
 /// into a legacy `Transaction` against `recent_blockhash`, and sign it
-/// with `signers`.
+/// with `payer`.
+///
+/// Takes a concrete `&Keypair` rather than `&dyn Signer`, deliberately:
+/// `dyn Signer` isn't `Sync`, and holding a `&dyn Signer` across this
+/// function's internal `.await` (fetching instructions) makes the
+/// resulting future `!Send` -- which breaks `tokio::spawn`ing anything
+/// that calls this (as `LiveTradingEngine::run` does). A concrete
+/// `Keypair` is `Send + Sync`, so this has no such problem.
 ///
 /// This deliberately does not build a `VersionedTransaction` with address
 /// lookup tables: `DexClient::build_swap_instructions`'s return type
@@ -46,7 +53,7 @@ pub async fn build_swap_transaction(
     swap: &SwapRequest,
     quote: &Quote,
     recent_blockhash: Hash,
-    signers: &[&dyn Signer],
+    payer: &Keypair,
 ) -> ExecutionResult<Transaction> {
     let instructions = dex.build_swap_instructions(swap, quote).await?;
     if instructions.is_empty() {
@@ -58,7 +65,7 @@ pub async fn build_swap_transaction(
     let transaction = TransactionBuilder::new()
         .payer(swap.payer)
         .add_instructions(instructions)
-        .build_and_sign(recent_blockhash.to_bytes(), signers)
+        .build_and_sign(recent_blockhash.to_bytes(), &[payer as &dyn Signer])
         .map_err(|e| ExecutionError::TransactionBuildFailed(e.to_string()))?;
 
     let size = bincode::serialize(&transaction)
@@ -108,8 +115,7 @@ pub async fn execute_swap(
         .await
         .map_err(|e| ExecutionError::TransactionBuildFailed(e.to_string()))?;
 
-    let swap_transaction =
-        build_swap_transaction(dex, swap, quote, blockhash, &[payer as &dyn Signer]).await?;
+    let swap_transaction = build_swap_transaction(dex, swap, quote, blockhash, payer).await?;
 
     let tip_transaction = match tip {
         Some((tip_account, lamports)) => {
@@ -233,7 +239,7 @@ mod tests {
             &sample_swap(payer.pubkey()),
             &sample_quote(),
             Hash::default(),
-            &[&payer],
+            &payer,
         )
         .await
         .unwrap();
@@ -254,7 +260,7 @@ mod tests {
             &sample_swap(payer.pubkey()),
             &sample_quote(),
             Hash::default(),
-            &[&payer],
+            &payer,
         )
         .await;
 
@@ -287,7 +293,7 @@ mod tests {
             &sample_swap(payer.pubkey()),
             &sample_quote(),
             Hash::default(),
-            &[&payer],
+            &payer,
         )
         .await;
 

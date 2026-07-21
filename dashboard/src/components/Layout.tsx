@@ -9,7 +9,10 @@ const SIMULATION_NAV_ITEMS = [
   { to: '/performance', label: 'Performance' },
 ];
 
-const LIVE_NAV_ITEMS = [{ to: '/wallet', label: 'Wallet' }];
+const LIVE_NAV_ITEMS = [
+  { to: '/wallet', label: 'Wallet' },
+  { to: '/live', label: 'Live Trading' },
+];
 
 function ConnectionBadge({ state }: { state: ConnectionState }) {
   const config = {

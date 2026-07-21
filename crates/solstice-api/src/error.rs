@@ -13,6 +13,9 @@ pub enum ApiError {
 
     #[error("upstream error: {0}")]
     Upstream(String),
+
+    #[error("bad request: {0}")]
+    BadRequest(String),
 }
 
 impl IntoResponse for ApiError {
@@ -20,6 +23,7 @@ impl IntoResponse for ApiError {
         let status = match &self {
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
             ApiError::Upstream(_) => StatusCode::BAD_GATEWAY,
+            ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
         };
         (
             status,
@@ -53,5 +57,11 @@ mod tests {
     fn test_upstream_maps_to_502() {
         let response = ApiError::Upstream("RPC timed out".to_string()).into_response();
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[test]
+    fn test_bad_request_maps_to_400() {
+        let response = ApiError::BadRequest("invalid max_capital_usd".to_string()).into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

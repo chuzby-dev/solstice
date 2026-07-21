@@ -1,4 +1,5 @@
 import type {
+  LiveStatusResponse,
   PerformanceResponse,
   PositionsResponse,
   StatusResponse,
@@ -19,14 +20,27 @@ async function getJson<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-/** `null` means "no wallet configured" (404) — not an error to surface. */
-async function getWallet(): Promise<WalletResponse | null> {
-  const response = await fetch(`${BASE}/wallet`);
+/** `null` means "not configured" (404) — not an error to surface. */
+async function getOptional<T>(path: string): Promise<T | null> {
+  const response = await fetch(`${BASE}${path}`);
   if (response.status === 404) return null;
   if (!response.ok) {
-    throw new Error(`/wallet failed: ${response.status} ${response.statusText}`);
+    throw new Error(`${path} failed: ${response.status} ${response.statusText}`);
   }
-  return response.json() as Promise<WalletResponse>;
+  return response.json() as Promise<T>;
+}
+
+async function postJson<T>(path: string, body?: unknown): Promise<T> {
+  const response = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`${path} failed: ${response.status} ${response.statusText} ${text}`);
+  }
+  return response.json() as Promise<T>;
 }
 
 export const api = {
@@ -34,10 +48,20 @@ export const api = {
   positions: () => getJson<PositionsResponse>('/positions'),
   trades: () => getJson<TradesResponse>('/trades'),
   performance: () => getJson<PerformanceResponse>('/performance'),
-  wallet: getWallet,
+  wallet: () => getOptional<WalletResponse>('/wallet'),
+  liveStatus: () => getOptional<LiveStatusResponse>('/live/status'),
+  liveEnable: () => postJson<LiveStatusResponse>('/live/enable'),
+  liveDisable: () => postJson<LiveStatusResponse>('/live/disable'),
+  liveSetMaxCapital: (max_capital_usd: number) =>
+    postJson<LiveStatusResponse>('/live/config', { max_capital_usd }),
 };
 
 export function wsUrl(): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${protocol}//${window.location.host}${BASE}/ws`;
+}
+
+export function liveWsUrl(): string {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}${BASE}/live/ws`;
 }

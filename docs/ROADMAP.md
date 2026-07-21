@@ -513,18 +513,28 @@ COMPLETE (live paper trading via 6.3, historical backtesting via 6.1/6.2/6.4).
   `trade` CLI (`solstice-execution::execute_swap`), confirmed on-chain:
   `47cnXVup8xVaUsNoC18n1bZYQdCNLW41SxzUUZNizqGTaS6wEPuZCcHF1akoQ2Fj6kN7F5WDxbihcG6WQjizD8m8`
   — see the changelog entry
-- [ ] Phased deployment — this was one manual, human-confirmed trade, not
-  a deployed/running live strategy
-- [ ] Monitoring intensified
-- [ ] Rapid response team
+- [x] Phased deployment ✅ automated live trading is now wired up
+  (`solstice_execution::live::LiveTradingEngine`) — kill switch defaults
+  to disabled, hard capital cap defaults to $50 (the user's stated
+  starting point), adjustable at runtime via `/api/v1/live/config`. Not
+  yet armed against real capital as of this entry — that's the user's
+  call to make, whenever they're ready, via the dashboard's confirmation
+  gate
+- [ ] Monitoring intensified — live event stream + dashboard exist; no
+  alerting (email/SMS/push) built
+- [ ] Rapid response team — N/A at this stage (solo user, not a team
+  deployment)
 - **Dependencies**: 10.3
-- **Gate**: First trades executed ✅ for manual execution; automated live
-  execution is explicitly not wired up — `execute_swap` exists as a
-  reusable function specifically so an automated engine could call it
-  later, but nothing does yet, by deliberate design (see changelog)
+- **Gate**: First trades executed ✅ manual (previous entry) and the
+  automated path is built and verified end-to-end (status/config/kill
+  switch all confirmed against a live server); an *automated* live fill
+  hasn't happened yet since the engine hasn't been armed against real
+  capital
 
 **Phase 10 Gate**: Trading live with capital deployed — manual execution
-proven for real; full automated live deployment remains future work.
+proven for real; automated execution is built, tested, and wired into the
+dashboard with a kill switch and adjustable capital cap, defaulting to
+safe/off. Arming it for real is a user decision, not an engineering gap.
 
 ---
 

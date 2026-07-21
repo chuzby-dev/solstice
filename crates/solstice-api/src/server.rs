@@ -2,8 +2,9 @@
 
 use crate::state::{AppState, WalletState};
 use crate::{handlers, websocket};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
+use solstice_execution::LiveTradingEngine;
 use solstice_simulation::PaperTradingEngine;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -21,8 +22,9 @@ impl ApiServer {
         engine: Arc<PaperTradingEngine>,
         addr: SocketAddr,
         wallet: Option<WalletState>,
+        live: Option<Arc<LiveTradingEngine>>,
     ) -> Self {
-        let state = AppState::new(engine, wallet);
+        let state = AppState::new(engine, wallet, live);
 
         let router = Router::new()
             .route("/api/v1/status", get(handlers::status))
@@ -31,6 +33,11 @@ impl ApiServer {
             .route("/api/v1/performance", get(handlers::performance))
             .route("/api/v1/wallet", get(handlers::wallet))
             .route("/api/v1/ws", get(websocket::ws_handler))
+            .route("/api/v1/live/status", get(handlers::live_status))
+            .route("/api/v1/live/enable", post(handlers::live_enable))
+            .route("/api/v1/live/disable", post(handlers::live_disable))
+            .route("/api/v1/live/config", post(handlers::live_set_config))
+            .route("/api/v1/live/ws", get(websocket::live_ws_handler))
             .layer(CorsLayer::permissive())
             .layer(TraceLayer::new_for_http())
             .with_state(state);

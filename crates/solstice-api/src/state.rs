@@ -2,6 +2,7 @@
 
 use solana_sdk::pubkey::Pubkey;
 use solstice_blockchain::SolanaRpcClient;
+use solstice_execution::LiveTradingEngine;
 use solstice_simulation::PaperTradingEngine;
 use std::sync::Arc;
 
@@ -19,10 +20,23 @@ pub struct WalletState {
 pub struct AppState {
     pub engine: Arc<PaperTradingEngine>,
     pub wallet: Option<WalletState>,
+    /// The automated live-trading engine, if one was configured at
+    /// startup. Its own kill switch defaults to disabled regardless of
+    /// whether this is `Some` -- configuring it only makes control
+    /// endpoints available, it does not itself arm trading.
+    pub live: Option<Arc<LiveTradingEngine>>,
 }
 
 impl AppState {
-    pub fn new(engine: Arc<PaperTradingEngine>, wallet: Option<WalletState>) -> Self {
-        AppState { engine, wallet }
+    pub fn new(
+        engine: Arc<PaperTradingEngine>,
+        wallet: Option<WalletState>,
+        live: Option<Arc<LiveTradingEngine>>,
+    ) -> Self {
+        AppState {
+            engine,
+            wallet,
+            live,
+        }
     }
 }

@@ -8,6 +8,7 @@
 
 pub mod error;
 pub mod jito;
+pub mod live;
 pub mod order_manager;
 pub mod planner;
 pub mod position_sizing;
@@ -15,6 +16,9 @@ pub mod risk;
 pub mod swap;
 
 pub use error::{ExecutionError, ExecutionResult};
+pub use live::{
+    LiveEvent, LiveStatusSnapshot, LiveTradedPair, LiveTradingConfig, LiveTradingEngine,
+};
 pub use order_manager::{Fill, Order, OrderManager, OrderStatus};
 pub use planner::{signal_pair, ExecutionPlan, ExecutionPlanner, PortfolioContext};
 pub use position_sizing::{PositionSizer, RiskParams};

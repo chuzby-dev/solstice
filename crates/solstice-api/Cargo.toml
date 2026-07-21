@@ -13,6 +13,7 @@ solstice-core = { path = "../solstice-core" }
 solstice-blockchain = { path = "../solstice-blockchain" }
 solstice-execution = { path = "../solstice-execution" }
 solstice-simulation = { path = "../solstice-simulation" }
+solstice-strategy = { path = "../solstice-strategy" }
 solana-sdk = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -29,7 +30,6 @@ dotenvy = "0.15"
 [dev-dependencies]
 tokio-test = { workspace = true }
 solstice-dex = { path = "../solstice-dex" }
-solstice-strategy = { path = "../solstice-strategy" }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 tokio-tungstenite = "0.24"

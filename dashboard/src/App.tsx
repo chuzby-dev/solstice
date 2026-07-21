@@ -3,6 +3,7 @@ import { api } from './api/client';
 import { useEngineEvents } from './api/useEngineEvents';
 import { usePolling } from './api/usePolling';
 import { Layout } from './components/Layout';
+import { LiveTradingPage } from './pages/LiveTradingPage';
 import { OverviewPage } from './pages/OverviewPage';
 import { PerformancePage } from './pages/PerformancePage';
 import { PositionsPage } from './pages/PositionsPage';
@@ -24,6 +25,7 @@ function App() {
           <Route path="trades" element={<TradesPage />} />
           <Route path="performance" element={<PerformancePage />} />
           <Route path="wallet" element={<WalletPage />} />
+          <Route path="live" element={<LiveTradingPage />} />
         </Route>
       </Routes>
     </HashRouter>

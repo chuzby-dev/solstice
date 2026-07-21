@@ -91,3 +91,49 @@ export type EngineEvent =
       timestamp: string;
       signal_count: number;
     };
+
+export interface LivePositionSnapshot {
+  pair_label: string;
+  quantity_raw: number;
+  entry_price: number;
+  current_price: number;
+  allocated_usd: number;
+  unrealized_pnl_usd: number;
+}
+
+export interface LiveStatusResponse {
+  enabled: boolean;
+  wallet_address: string;
+  max_capital_usd: number;
+  capital_deployed_usd: number;
+  capital_available_usd: number;
+  realized_pnl_usd: number;
+  positions: LivePositionSnapshot[];
+}
+
+export type LiveEvent =
+  | { type: 'PriceUpdate'; pair_label: string; price: number; timestamp: string }
+  | { type: 'SignalGenerated'; strategy: string; pair_label: string; confidence: number }
+  | {
+      type: 'WouldTrade';
+      strategy: string;
+      pair_label: string;
+      size_usd: number;
+      is_buy: boolean;
+    }
+  | { type: 'SignalSkipped'; strategy: string; pair_label: string; reason: string }
+  | {
+      type: 'OrderFilled';
+      strategy: string;
+      pair_label: string;
+      size_usd: number;
+      price: number;
+      method: string;
+      signature: string | null;
+    }
+  | { type: 'OrderFailed'; strategy: string; pair_label: string; reason: string }
+  | { type: 'PositionClosed'; pair_label: string; realized_pnl_usd: number; reason: string }
+  | { type: 'LiveTradingEnabled' }
+  | { type: 'LiveTradingDisabled' }
+  | { type: 'MaxCapitalChanged'; max_capital_usd: number }
+  | { type: 'TickCompleted'; timestamp: string; signal_count: number };

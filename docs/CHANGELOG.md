@@ -1086,6 +1086,102 @@ permanent record, not a silent fix.
 
 ---
 
+## [0.1.0-alpha] - 2026-07-21 (Automated live trading, wired up)
+
+### New: `LiveTradingEngine` (`solstice_execution::live`)
+
+The user explicitly asked for this, with the explicit expectation that it
+would trade automatically: the same strategy → size → risk-check pipeline
+as `PaperTradingEngine`, but backed by a real wallet, calling
+`execute_swap` for real when armed.
+
+**Defaults to disabled, and that default is load-bearing, not cosmetic.**
+`LiveTradingEngine::is_enabled()` starts `false`; nothing flips it except
+an explicit call to `enable()`. While disabled, every tick runs the exact
+same signal-generation, sizing, and risk-check logic and emits
+`LiveEvent::WouldTrade` instead of touching the network — so "what would
+this do" is observable with zero funds risk before anyone arms it.
+`disable()` is synchronous, instant, and unconditionally available: it
+never awaits anything, so there's no scenario where turning trading off is
+itself blocked on network I/O. Verified by test, not just asserted in a
+comment: `test_disabled_engine_never_touches_capital_on_would_trade`
+confirms the capital-deployed counter is untouched and a `WouldTrade`
+event fires when disabled.
+
+**Hard, adjustable capital ceiling.** `LiveTradingConfig::max_capital_usd`
+(default $50, matching the user's stated starting point) bounds total
+capital deployed *independent of the wallet's actual balance* — the
+wallet may hold more, and that's not what limits risk here. Adjustable at
+runtime via `set_max_capital_usd`, which the position-sizing math
+(`plan_signal`) reads fresh on every signal, so a change takes effect
+immediately, not on next restart.
+
+**A real bug caught before it shipped**: the original `act_on_signal`
+reconstructed a price snapshot from the *existing position's* stored
+price, meaning a pair with no open position yet had no price to plan
+against — the engine could never have opened its first position for any
+pair. Fixed by passing the tick's already-fetched `MarketSnapshot` straight
+through, the same way `PaperTradingEngine` does it. Caught while writing
+this entry, not by a test — flagged here as a reminder that "mirrors an
+existing, working engine's structure" doesn't guarantee mirroring its
+correctness in every branch.
+
+**A `!Send` future bug caught by the compiler, not by review**: the first
+version of `build_swap_transaction` took `signers: &[&dyn Signer]`.
+`dyn Signer` isn't `Sync`, so holding that reference across the function's
+internal `.await` made the whole future `!Send` — which only became
+visible once something tried to `tokio::spawn(live.run())` in `serve.rs`
+and the compiler refused. Fixed by taking `&Keypair` (concretely
+`Send + Sync`) instead, constructing the `&dyn Signer` slice only for the
+synchronous `build_and_sign` call inside, never held across a suspension
+point.
+
+### New API surface: `/api/v1/live/*`
+
+`GET /status`, `POST /enable`, `POST /disable`, `POST /config`
+(`{"max_capital_usd": n}`, `400` on negative/non-finite), and a
+`/live/ws` WebSocket streaming `LiveEvent`s — all `404` if no wallet is
+configured. `enable`/`disable` are real control-plane writes (unlike
+every other endpoint in this API, which are read-only), reflecting that
+the user explicitly asked for this control surface; `disable` needed no
+extra scrutiny (always safe), `enable` is expected to sit behind the
+dashboard's own confirmation gate, not the API's.
+
+### Dashboard: a Live Trading control page
+
+New page (`/live`, in the "Live" nav section alongside Wallet): trading
+status, deployed/available/max capital, an editable max-capital field, a
+live activity feed (would-trade previews, fills, failures, position
+closes), and the kill switch itself. The **disable** button is always a
+single click. The **enable** button stays disabled until the user types
+the literal phrase `ENABLE LIVE TRADING` into an adjacent field — the same
+"a typo should abort, not confirm" philosophy as the `trade` CLI's `SEND`
+confirmation, now as a UI gate. Verified in a real browser against a real
+running server with the real wallet configured: typing the wrong phrase
+left the button `disabled` (checked via direct DOM inspection, not just
+visually), and live `PriceUpdate`/`TickCompleted` events streamed
+correctly over the new WebSocket. `enable` was **not** clicked during this
+verification — arming real trading is the user's action, not this agent's,
+even to prove a UI works.
+
+### Verified end to end
+
+Live server run against the real wallet
+(`CAxwjUEH7XgataKcfihGwzNWswqXsLtVgqpHjVLR9K3f`, ~$0.78 balance) with
+`WALLET_KEYPAIR_PATH` set: startup logs confirmed "Live trading engine
+configured (DISABLED by default, max $50.00 capital cap)", and
+`GET /api/v1/live/status` returned the expected disabled state.
+`POST /api/v1/live/config` with `{"max_capital_usd": 25}` updated it,
+`POST /api/v1/live/disable` was called (safe, idempotent) and confirmed
+still-disabled, and `-5.0` was correctly rejected with `400`.
+`cargo fmt --check`, `cargo clippy --workspace --all-targets
+--all-features -D warnings`, and `cargo test --workspace` all pass clean
+(8 new tests in `solstice-execution::live`, covering the kill-switch
+default, enable/disable events, capital-cap enforcement, and the
+disabled-mode safety invariant). Dashboard `tsc -b && vite build` clean.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started

@@ -6,10 +6,16 @@
 //! type's fields.
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use solstice_execution::order_manager::{Order, OrderStatus};
 use solstice_execution::TradeApproval;
 use solstice_simulation::PortfolioSnapshot;
+
+/// Request body for `POST /api/v1/live/config`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SetMaxCapitalRequest {
+    pub max_capital_usd: f64,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusResponse {
