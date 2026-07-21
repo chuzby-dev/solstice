@@ -4,7 +4,10 @@ use crate::accounts::{AccountInfo, BatchAccountResult};
 use crate::error::{BlockchainError, BlockchainResult};
 use crate::types::{EndpointHealth, RpcClientConfig, RpcEndpointConfig};
 use solana_client::nonblocking::rpc_client::RpcClient as NonblockingRpcClient;
+use solana_sdk::hash::Hash;
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::Signature;
+use solana_sdk::transaction::Transaction;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -246,6 +249,68 @@ impl SolanaRpcClient {
         }
 
         Err(BlockchainError::RpcError(
+            last_error.unwrap_or_else(|| "all RPC attempts failed".to_string()),
+        ))
+    }
+
+    /// Fetch a recent blockhash, trying each endpoint in priority order.
+    pub async fn get_latest_blockhash(&self) -> BlockchainResult<Hash> {
+        let max_attempts = self.config.max_retries.max(1);
+        let mut last_error: Option<String> = None;
+
+        for _ in 0..max_attempts {
+            let endpoint = self.get_active_endpoint()?;
+            let rpc = self.build_rpc_client(&endpoint);
+            let call_start = Instant::now();
+
+            match rpc.get_latest_blockhash().await {
+                Ok(hash) => {
+                    let latency_ms = call_start.elapsed().as_secs_f64() * 1000.0;
+                    self.record_success(&endpoint, latency_ms)?;
+                    return Ok(hash);
+                }
+                Err(e) => {
+                    let message = e.to_string();
+                    self.record_error(&endpoint, message.clone())?;
+                    last_error = Some(message);
+                }
+            }
+        }
+
+        Err(BlockchainError::RpcError(
+            last_error.unwrap_or_else(|| "all RPC attempts failed".to_string()),
+        ))
+    }
+
+    /// Submit a signed transaction, trying each endpoint in priority order
+    /// until one accepts it or all fail. This only submits the transaction
+    /// — it does not wait for confirmation; callers that need that should
+    /// poll `getSignatureStatuses` (not yet wrapped here) against the
+    /// returned signature.
+    pub async fn send_transaction(&self, transaction: &Transaction) -> BlockchainResult<Signature> {
+        let max_attempts = self.config.max_retries.max(1);
+        let mut last_error: Option<String> = None;
+
+        for _ in 0..max_attempts {
+            let endpoint = self.get_active_endpoint()?;
+            let rpc = self.build_rpc_client(&endpoint);
+            let call_start = Instant::now();
+
+            match rpc.send_transaction(transaction).await {
+                Ok(signature) => {
+                    let latency_ms = call_start.elapsed().as_secs_f64() * 1000.0;
+                    self.record_success(&endpoint, latency_ms)?;
+                    return Ok(signature);
+                }
+                Err(e) => {
+                    let message = e.to_string();
+                    self.record_error(&endpoint, message.clone())?;
+                    last_error = Some(message);
+                }
+            }
+        }
+
+        Err(BlockchainError::TransactionFailed(
             last_error.unwrap_or_else(|| "all RPC attempts failed".to_string()),
         ))
     }

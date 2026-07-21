@@ -201,30 +201,49 @@ Solstice development follows a phased approach with clear milestones and gates. 
 ### Milestones
 
 **5.1 - Jito Integration** (Week 30-32)
-- [ ] Jito bundle client
-- [ ] Bundle construction
-- [ ] Bundle submission
-- [ ] Tip optimization
+- [x] Jito bundle client (`solstice_execution::jito::JitoClient`)
+- [x] Bundle construction (`jito::Bundle`, enforces the 5-tx cap)
+- [x] Bundle submission (`sendBundle`, live endpoint shape verified)
+- [x] Tip optimization (`jito::TipStrategy` — fixed or bps-of-notional,
+  against tip accounts fetched live via `getTipAccounts`, never hardcoded)
 - **Dependencies**: 4.3, 1.3
-- **Gate**: Can create and submit bundles
+- **Gate**: Can create and submit bundles ✅ COMPLETE for the transport
+  layer — see the Phase 5 changelog entry for the one thing this does NOT
+  do (build real swap instructions to put in a bundle)
 
 **5.2 - MEV Protection** (Week 32-34)
-- [ ] Private RPC connectivity
-- [ ] Bundle redundancy
-- [ ] Fallback to direct submission
-- [ ] Fee optimization
+- [x] Private RPC connectivity (`JitoConfig::endpoints` — point at a
+  private/dedicated Block Engine URL same as any other)
+- [x] Bundle redundancy (submits to every configured endpoint in turn)
+- [x] Fallback to direct submission (`jito::submit_with_fallback`, via a
+  new `SolanaRpcClient::send_transaction` in `solstice-blockchain`)
+- [ ] Fee optimization (tip sizing exists via `TipStrategy`; dynamic
+  fee-market-aware optimization is not built)
 - **Dependencies**: 5.1
-- **Gate**: Bundles succeed at reasonable cost
+- **Gate**: Bundles succeed at reasonable cost — not verifiable without a
+  funded wallet actually submitting bundles; see changelog
 
 **5.3 - Settlement & Monitoring** (Week 34-35)
-- [ ] Confirmation monitoring
-- [ ] Failed bundle handling
-- [ ] Retry logic
-- [ ] Settlement recording
+- [x] Confirmation monitoring (`JitoClient::confirm_bundle` polls
+  `getBundleStatuses`)
+- [x] Failed bundle handling (`BundleStatus::Failed` triggers the fallback
+  path in `submit_with_fallback`)
+- [x] Retry logic (poll-until-timeout in `confirm_bundle`, then fallback)
+- [ ] Settlement recording (not wired to `solstice-storage` automatically;
+  `SubmissionOutcome` returns everything a caller needs to record it via
+  the existing `StoragePool::save_trade`)
 - **Dependencies**: 5.1
-- **Gate**: Orders reliably settle; failures handled
+- **Gate**: Orders reliably settle; failures handled — logic is built and
+  tested, but "reliably settle" can't be claimed without live mainnet
+  bundle submissions this session didn't attempt (no funded wallet)
 
-**Phase 5 Gate**: MEV-protected execution working; bundles succeed reliably.
+**Phase 5 Gate**: MEV-protected *transport* (bundle/tip/submit/confirm/
+fallback) is complete and tested. Full "MEV-protected execution" — actually
+routing a real swap through this — additionally needs real swap-instruction
+building, which doesn't exist anywhere in this workspace yet (see Phase 2's
+`solstice-dex` `Quote` type: pricing only, no instructions) and a funded
+signer, neither of which this phase attempted. See changelog for the full
+reasoning.
 
 ---
 

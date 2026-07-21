@@ -675,6 +675,79 @@ clean compile.
 
 ---
 
+## [0.1.0-alpha] - 2026-07-21 (Phase 5)
+
+### Phase 5.1 - Jito Integration ✅ (transport layer), 5.2 - MEV Protection ✅ (partial), 5.3 - Settlement & Monitoring ✅ (partial)
+
+A Jito Block Engine client for MEV-protected bundle submission — new
+`solstice_execution::jito` module. This is deliberately scoped as a
+**transport layer**: it bundles, tips, submits, and confirms already-signed
+transactions, regardless of what those transactions do. It cannot by itself
+turn a signal into an on-chain trade, and here's exactly why:
+
+**No swap-instruction building exists anywhere in this workspace.**
+`solstice-dex`'s `Quote`/`RouteSegment` (used by every strategy/execution
+path so far) carry pricing and routing *metadata only* — no program ID, no
+account list, no instruction data. Building a real Raydium/Orca/Jupiter swap
+instruction is new capability this phase doesn't add, consistent with this
+session's standing rule: don't guess at account layouts/orderings for
+money-moving instructions. A Jito bundle here is built from whatever
+already-signed `Transaction`s the caller supplies — this module doesn't care
+what's in them.
+
+**What's built and how it was verified**:
+- `jito::Bundle` — an ordered, capped (5-transaction) set of transactions to
+  submit atomically. Cap enforcement is unit-tested.
+- `jito::TipStrategy` — `Fixed(lamports)` or `BpsOfNotional{..}` (clamped
+  min/max), and `build_tip_instruction` — a plain `system_instruction::transfer`
+  to a tip account. Tip accounts are never hardcoded: `JitoClient::get_tip_accounts`
+  queries the Block Engine's `getTipAccounts` live. **This one call was
+  verified against the real endpoint** (`https://mainnet.block-engine.jito.wtf/api/v1/bundles`)
+  while building it — an earlier version pointed at the wrong path
+  (`/api/v1` instead of `/api/v1/bundles`) and failed with a JSON decode
+  error until corrected against the live response. There's now a
+  `#[ignore]`d live test (`jito::client::tests::test_get_tip_accounts_live`,
+  same convention as `solstice-blockchain`'s existing live RPC test) that
+  passed when run explicitly.
+- `jito::JitoClient::send_bundle`/`get_bundle_status`/`confirm_bundle` —
+  `sendBundle` and `getBundleStatuses` request/response handling, built to
+  Jito's documented JSON-RPC shape and unit-tested against synthetic
+  fixture JSON (request shape, success, RPC error, landed, failed, and
+  not-yet-found-treated-as-pending cases). **Not exercised against a real
+  submission** — that needs a real signed transaction and real SOL for the
+  tip, which this agent does not hold and will not acquire on the user's
+  behalf. Flagged rather than silently assumed correct.
+- `jito::submit_with_fallback` (5.2/5.3) — tries the Jito bundle path first;
+  on rejection, a `Failed` status, or a `confirm_bundle` timeout, falls back
+  to submitting the primary transactions directly via a new
+  `SolanaRpcClient::send_transaction`/`get_latest_blockhash` in
+  `solstice-blockchain` (that crate previously had no send capability at
+  all — only read-only `get_account`/`get_multiple_accounts`). The fallback
+  path deliberately drops the tip transaction: a direct RPC send gets no
+  MEV protection, so paying the Jito tip for it would burn SOL for nothing.
+- "Bundle redundancy" (5.2) is submitting the same bundle to every
+  configured `JitoConfig::endpoints` entry in turn — real multi-region
+  redundancy, just sequential rather than concurrent (no new dependency
+  needed for that; a reasonable scope cut given a handful of endpoints).
+
+**Deliberately not built**: dynamic fee-market-aware tip optimization
+(`TipStrategy` is caller-configured, not self-tuning), and settlement
+recording to `solstice-storage` (not wired automatically — `SubmissionOutcome`
+returns the bundle id/signatures a caller needs to record a fill via the
+existing `StoragePool::save_trade` themselves). Both are explicit follow-up
+work, not silently skipped.
+
+**Verified end to end**: `cargo fmt --check`, `cargo clippy --workspace
+--all-targets --all-features -D warnings`, and `cargo test --workspace` all
+pass clean (26 new tests in `solstice-execution` covering bundle capping,
+tip math, request/response parsing, and the fallback path's guard
+conditions). Plus the one live call described above. Bundle
+submission/confirmation against real mainnet — the only remaining
+unverified piece — needs a funded wallet and real swap instructions the
+user would have to supply; not something to fabricate or attempt here.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started

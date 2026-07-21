@@ -7,6 +7,7 @@
 //! summary.
 
 pub mod error;
+pub mod jito;
 pub mod order_manager;
 pub mod planner;
 pub mod position_sizing;
