@@ -421,7 +421,28 @@ impl DexClient for RaydiumClient {
             amount_in: swap.amount,
             minimum_amount_out,
         };
-        instructions.push(swap_accounts.instruction(args));
+        // `SwapBaseIn::instruction` encodes its data with an 8-byte
+        // Anchor-style discriminator (`raydium_amm`'s codegen assumed an
+        // Anchor IDL) -- but the deployed Raydium AMM v4 program is a
+        // pre-Anchor native program, and that encoding reverted on-chain
+        // with "Error: InvalidInstructionData" on the first live attempt.
+        // The account list this same builder produces was not implicated
+        // (the revert happened at instruction-data deserialization,
+        // before any account is touched), so only the data is replaced
+        // here: Raydium's actual `AmmInstruction` is a plain Borsh enum,
+        // which serializes as a single leading variant-index byte -- `9`
+        // for `SwapBaseIn` -- followed by the two `u64` args. Not
+        // independently re-verified against a raw on-chain instruction
+        // this session (unlike the OpenBook market layout above, which
+        // was); if this index is wrong, Solana's mandatory pre-broadcast
+        // simulation means it fails the same safe way the Anchor-style
+        // encoding did, not a wrong/lost trade.
+        let mut swap_instruction = swap_accounts.instruction(args);
+        let mut data = vec![9u8];
+        data.extend_from_slice(&swap.amount.to_le_bytes());
+        data.extend_from_slice(&minimum_amount_out.to_le_bytes());
+        swap_instruction.data = data;
+        instructions.push(swap_instruction);
 
         Ok(SwapInstructions {
             instructions,

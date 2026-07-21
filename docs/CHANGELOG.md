@@ -1653,6 +1653,72 @@ lines now also emitted from the live engine, not just the paper one).
 
 ---
 
+## [0.1.0-alpha] - 2026-07-21 (Fix: live SpreadArb failures within minutes of going live)
+
+The user re-armed live trading with SpreadArb enabled and pasted the
+actual dashboard activity feed: one real fill (`$4.00 of SOL/USDC @
+$77.8445 (Direct)`), then three straight `unknown DEX` failures, then a
+real on-chain revert with `Error: InvalidInstructionData` from Raydium's
+program. Two separate, real bugs, both introduced by the last two
+entries.
+
+### Bug 1: winning-DEX resolution broke whenever Jupiter's own route won
+
+`execute_planned_trade`/`close_position` resolved which registered
+client to call `build_swap_instructions` on via `quote.route.first().dex`,
+assuming it would read back one of the three registered names
+(`"Jupiter"`/`"Orca"`/`"Raydium"`). True for Orca/Raydium's own
+single-hop quotes, but Jupiter's route segments are labeled with the
+*underlying venue it actually routed through* (`"AlphaQ"`, `"SolFi V2"`,
+`"BisonFi"`, ...) since Jupiter is itself an aggregator -- there's no
+way to recover "Jupiter" (the name it's registered under in *our*
+aggregator) from that string. Every tick where Jupiter's own route won
+the best-price comparison failed with `unknown DEX: <venue>`.
+
+Fixed by adding `DexAggregator::get_best_route_with_source`, which
+returns the winning *registered* client's name alongside the `Quote`
+(tracked internally during the existing concurrent-query/compare loop,
+rather than reconstructed after the fact from the quote itself). Always
+bypasses the route cache -- a caller asking for the winning client is
+about to build a real instruction against it, and a several-second-old
+cached quote isn't the freshness that decision needs.
+
+### Bug 2: Raydium's own instruction builder produces invalid on-chain data
+
+`raydium_amm`'s codegen'd `SwapBaseIn::instruction()` prepends an 8-byte
+Anchor-style discriminator to the args -- but the deployed Raydium AMM v4
+program is not an Anchor program (predates it), and that encoding
+reverted for real on the very first live attempt that picked Raydium,
+confirmed directly in the pasted logs: `Program 675kPX9...: Error:
+InvalidInstructionData`, failing at ~5,136 compute units -- consistent
+with failing instruction-data deserialization before any account is even
+touched. Fixed by keeping this builder's (correct) account list but
+replacing the data with the actual native-program encoding: a single
+leading tag byte (`9`, `SwapBaseIn`'s variant index in Raydium's real,
+plain-Borsh `AmmInstruction` enum) followed by the two `u64` args,
+little-endian. Not independently re-verified against a raw on-chain
+instruction this session the way the OpenBook market layout was --
+attempted several routes to pull one (direct pool signature history,
+Jupiter's swap-instructions API, block-explorer APIs) and all either
+routed through wrapper contracts or were blocked; flagged clearly in
+both the code comment and here. The failure mode if this index is
+somehow still wrong is identical to before fixing it: a clean
+pre-broadcast simulation rejection, not a wrong or lost trade.
+
+### Verified
+
+`cargo fmt --all`, `cargo clippy --workspace --lib --bins --tests
+--all-features -D warnings`, and `cargo test --workspace` all pass clean.
+New tests: `test_best_route_with_source_returns_registered_name_not_route_label`
+(a `MockDex` whose route label deliberately differs from its registered
+name, mirroring Jupiter's real behavior, confirming the fix resolves the
+*registered* name); the existing live Raydium integration test now also
+asserts the swap instruction's data is exactly 17 bytes, starts with tag
+`9`, and correctly encodes `amount_in`. Server rebuilt and restarted
+(safe -- no capital deployed, no positions at the time).
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started

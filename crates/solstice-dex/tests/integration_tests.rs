@@ -122,8 +122,18 @@ async fn test_raydium_build_swap_instructions_live() {
     let built = client.build_swap_instructions(&swap, &quote).await.unwrap();
 
     assert_eq!(built.instructions.len(), 3);
-    assert!(built
+    let swap_ix = built
         .instructions
         .iter()
-        .any(|ix| ix.program_id == *client.program_id()));
+        .find(|ix| ix.program_id == *client.program_id())
+        .expect("swap instruction present");
+
+    // Not an Anchor-style 8-byte discriminator (see build_swap_instructions'
+    // comment on why): a single `9u8` tag (SwapBaseIn's variant index in
+    // Raydium's real, pre-Anchor `AmmInstruction` enum) followed by the
+    // two `u64` args, little-endian.
+    assert_eq!(swap_ix.data.len(), 17);
+    assert_eq!(swap_ix.data[0], 9);
+    let amount_in = u64::from_le_bytes(swap_ix.data[1..9].try_into().unwrap());
+    assert_eq!(amount_in, 10_000_000);
 }

@@ -25,8 +25,7 @@ use solana_sdk::pubkey::Pubkey;
 use solstice_blockchain::{SolanaRpcClient, WalletFile};
 use solstice_core::types::{Position, PositionId, Signal, SignalType, TokenPair};
 use solstice_dex::{
-    DexAggregator, DexError, JupiterClient, OrcaClient, Quote, QuoteRequest, RaydiumClient,
-    SwapRequest,
+    DexAggregator, JupiterClient, OrcaClient, Quote, QuoteRequest, RaydiumClient, SwapRequest,
 };
 use solstice_strategy::{MarketSnapshot, PortfolioState, RiskMetrics, StrategyManager};
 use std::collections::HashMap;
@@ -726,9 +725,9 @@ impl LiveTradingEngine {
         // own aggregated route -- occasionally a direct pool beats
         // Jupiter's routing overhead, and this is a fallback if Jupiter's
         // API has an outage.
-        let quote = match self
+        let (winning_name, quote) = match self
             .dex
-            .get_best_route(&QuoteRequest::new(
+            .get_best_route_with_source(&QuoteRequest::new(
                 swap.input_mint,
                 swap.output_mint,
                 swap.amount,
@@ -736,7 +735,7 @@ impl LiveTradingEngine {
             ))
             .await
         {
-            Ok(quote) => quote,
+            Ok(result) => result,
             Err(e) => {
                 self.emit(LiveEvent::OrderFailed {
                     strategy: signal.strategy.clone(),
@@ -747,12 +746,7 @@ impl LiveTradingEngine {
             }
         };
 
-        let winning_dex = match quote
-            .route
-            .first()
-            .ok_or(DexError::NoRoute)
-            .and_then(|segment| self.dex.get_client(&segment.dex))
-        {
+        let winning_dex = match self.dex.get_client(&winning_name) {
             Ok(client) => client,
             Err(e) => {
                 self.emit(LiveEvent::OrderFailed {
@@ -961,9 +955,9 @@ impl LiveTradingEngine {
                 .slippage_bps,
         };
 
-        let quote = match self
+        let (winning_name, quote) = match self
             .dex
-            .get_best_route(&QuoteRequest::new(
+            .get_best_route_with_source(&QuoteRequest::new(
                 swap.input_mint,
                 swap.output_mint,
                 swap.amount,
@@ -971,7 +965,7 @@ impl LiveTradingEngine {
             ))
             .await
         {
-            Ok(quote) => quote,
+            Ok(result) => result,
             Err(e) => {
                 warn!(
                     "failed to fetch stop-loss close quote for {}: {}",
@@ -981,12 +975,7 @@ impl LiveTradingEngine {
             }
         };
 
-        let winning_dex = match quote
-            .route
-            .first()
-            .ok_or(DexError::NoRoute)
-            .and_then(|segment| self.dex.get_client(&segment.dex))
-        {
+        let winning_dex = match self.dex.get_client(&winning_name) {
             Ok(client) => client,
             Err(e) => {
                 warn!(

@@ -166,6 +166,63 @@ impl DexAggregator {
         Ok(best)
     }
 
+    /// Like [`Self::get_best_route`], but also returns which *registered*
+    /// client (the name passed to [`Self::register`]) produced the
+    /// winning quote -- needed because a `Quote`'s own `route` field
+    /// can't be used to recover this in general. Jupiter's quotes label
+    /// each hop with the underlying venue it actually routed through
+    /// (e.g. `"AlphaQ"`, `"SolFi V2"`), since Jupiter is itself an
+    /// aggregator, not literally `"Jupiter"` -- a caller that needs to
+    /// call `build_swap_instructions` on the specific client that won
+    /// (as live execution does) has no way to get back to that client
+    /// from the route label alone. Always fetches fresh (bypasses the
+    /// route cache): a caller asking for the winning *client* is about to
+    /// build a real instruction against it, and a cached quote could be
+    /// several seconds stale by then.
+    pub async fn get_best_route_with_source(
+        &self,
+        request: &QuoteRequest,
+    ) -> DexResult<(String, Quote)> {
+        if self.clients.is_empty() {
+            return Err(DexError::NoRoute);
+        }
+
+        let mut handles = Vec::with_capacity(self.clients.len());
+        for (name, client) in &self.clients {
+            let client = Arc::clone(client);
+            let name = name.clone();
+            let request = request.clone();
+            handles.push(tokio::spawn(async move {
+                (name, client.get_quote(&request).await)
+            }));
+        }
+
+        let mut best: Option<(String, Quote)> = None;
+        for handle in handles {
+            let (name, result) = match handle.await {
+                Ok(pair) => pair,
+                Err(e) => {
+                    warn!("DEX quote task panicked: {}", e);
+                    continue;
+                }
+            };
+            match result {
+                Ok(quote) => {
+                    if best
+                        .as_ref()
+                        .map(|(_, b)| quote.out_amount > b.out_amount)
+                        .unwrap_or(true)
+                    {
+                        best = Some((name, quote));
+                    }
+                }
+                Err(e) => warn!("Failed to get quote from {}: {}", name, e),
+            }
+        }
+
+        best.ok_or(DexError::NoRoute)
+    }
+
     /// Estimate slippage of the best available route against the simple
     /// midpoint price implied by that same route's first leg.
     pub async fn estimate_slippage(&self, request: &QuoteRequest) -> DexResult<f64> {
@@ -212,6 +269,23 @@ mod tests {
         name: &'static str,
         program_id: Pubkey,
         out_amount: u64,
+        /// The route's internal `dex` label -- deliberately a separate
+        /// field from `name` (defaulting to it via [`MockDex::new`]) so
+        /// tests can simulate Jupiter's real behavior: it labels each hop
+        /// with the underlying venue it routed through, not `"Jupiter"`,
+        /// the name it's actually registered under.
+        route_label: &'static str,
+    }
+
+    impl MockDex {
+        fn new(name: &'static str, out_amount: u64) -> Self {
+            MockDex {
+                name,
+                program_id: Pubkey::new_unique(),
+                out_amount,
+                route_label: name,
+            }
+        }
     }
 
     #[async_trait]
@@ -225,7 +299,7 @@ mod tests {
                 price_impact: 0.0,
                 liquidity: self.out_amount,
                 route: vec![RouteSegment {
-                    dex: self.name.to_string(),
+                    dex: self.route_label.to_string(),
                     input_mint: request.input_mint,
                     output_mint: request.output_mint,
                     input_amount: request.amount,
@@ -279,16 +353,8 @@ mod tests {
     #[tokio::test]
     async fn test_best_route_picks_highest_output() {
         let mut aggregator = DexAggregator::new();
-        aggregator.register(Arc::new(MockDex {
-            name: "Low",
-            program_id: Pubkey::new_unique(),
-            out_amount: 100,
-        }));
-        aggregator.register(Arc::new(MockDex {
-            name: "High",
-            program_id: Pubkey::new_unique(),
-            out_amount: 200,
-        }));
+        aggregator.register(Arc::new(MockDex::new("Low", 100)));
+        aggregator.register(Arc::new(MockDex::new("High", 200)));
 
         let best = aggregator.get_best_route(&sample_request()).await.unwrap();
         assert_eq!(best.out_amount, 200);
@@ -296,13 +362,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_best_route_with_source_returns_registered_name_not_route_label() {
+        // Mirrors Jupiter's real behavior: the route's own `dex` label is
+        // the underlying venue it routed through (here, "AlphaQ"), not
+        // the name it's registered under in the aggregator ("Jupiter").
+        // A caller resolving the winning client via `get_client` needs
+        // the registered name, which the route label alone can't provide.
+        let mut aggregator = DexAggregator::new();
+        let mut jupiter_like = MockDex::new("Jupiter", 200);
+        jupiter_like.route_label = "AlphaQ";
+        aggregator.register(Arc::new(jupiter_like));
+        aggregator.register(Arc::new(MockDex::new("Orca", 100)));
+
+        let (name, quote) = aggregator
+            .get_best_route_with_source(&sample_request())
+            .await
+            .unwrap();
+
+        assert_eq!(name, "Jupiter");
+        assert_eq!(quote.route[0].dex, "AlphaQ");
+        assert!(aggregator.get_client(&name).is_ok());
+    }
+
+    #[tokio::test]
     async fn test_route_cache_hit() {
         let mut aggregator = DexAggregator::new();
-        aggregator.register(Arc::new(MockDex {
-            name: "Only",
-            program_id: Pubkey::new_unique(),
-            out_amount: 500,
-        }));
+        aggregator.register(Arc::new(MockDex::new("Only", 500)));
 
         let request = sample_request();
         let first = aggregator.get_best_route(&request).await.unwrap();
@@ -322,11 +407,7 @@ mod tests {
     #[tokio::test]
     async fn test_estimate_slippage_no_impact() {
         let mut aggregator = DexAggregator::new();
-        aggregator.register(Arc::new(MockDex {
-            name: "Only",
-            program_id: Pubkey::new_unique(),
-            out_amount: 1_000_000,
-        }));
+        aggregator.register(Arc::new(MockDex::new("Only", 1_000_000)));
 
         let request = QuoteRequest::new(Pubkey::new_unique(), Pubkey::new_unique(), 1_000_000, 50);
         let slippage = aggregator.estimate_slippage(&request).await.unwrap();
