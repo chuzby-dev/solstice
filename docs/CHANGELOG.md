@@ -586,6 +586,95 @@ against genuine engine state rather than fixtures.
 
 ---
 
+## [0.1.0-alpha] - 2026-07-21 (Phase 6.1/6.2/6.4)
+
+### Phase 6.1 - Simulation Engine ✅, 6.2 - Order Simulation ✅, 6.4 - Backtesting Engine ✅
+
+The historical-replay backtesting these milestones call for, deliberately
+skipped back in Phase 6.3 in favor of a runnable live-paper-trading demo. New
+`solstice_simulation::backtest` module and a second runnable binary:
+
+```sh
+cargo run -p solstice-simulation --bin backtest -- data.csv --short 5 --long 20 --capital 10000 --out report.json
+```
+
+`data.csv` is a two-column `timestamp,price` CSV (RFC3339 timestamps) — the
+common export shape for on-chain price history, since nothing in this
+workspace ingests a specific vendor's historical-data API and
+`solstice-storage`'s `market_snapshots` table only has data for pairs this
+platform has itself observed live.
+
+**A second engine, not a generalized one**: `BacktestEngine` is a new type
+alongside `PaperTradingEngine`, not a refactor of it into one engine with two
+data sources. `PaperTradingEngine` fills instantly at a live DEX quote's exact
+price because that quote already reflects real venue liquidity and fees; a
+bare historical price point carries none of that, so a backtest needs its own
+execution-cost model (`backtest::fill_model`) or it silently overstates every
+strategy's performance with free, instant, unlimited-size fills. Forcing both
+onto one abstraction would have meant threading that cost model through the
+live path too, for no benefit — trying to average `∞ liquidity, 0 cost` and
+`configurable slippage/fees/partial fills` into a shared code path was worse
+than two engines that each say plainly what they model. `BacktestEngine` does
+reuse the same strategy → `PositionSizer` → `PreTradeRiskChecker` →
+`OrderManager` pipeline `PaperTradingEngine` uses, just single-threaded
+(`&mut self`, no `Arc<Mutex<_>>`/broadcast channel) since a replay is one
+sequential pass with one caller, not something a concurrently-polling API
+server needs to share.
+
+**Order simulation** (`backtest::fill_model`): `SlippageModel` (none / fixed
+bps / size-scaled bps against a reference notional), `FeeModel` (flat
+proportional fee), `PartialFillConfig` (caps how much of an order fills per
+tick, so a large order spreads across several ticks — `PartiallyFilled` —
+instead of filling instantly against one bare price point with no real depth
+information to justify that). All three are configurable, not fit to any
+specific real venue's actual microstructure — a caller who wants that must
+supply their own numbers.
+
+**Performance calculation & report generation** (`backtest::report`):
+`PerformanceMetrics` — total return, max drawdown, a per-tick Sharpe ratio
+(explicitly documented as *not* annualized, since replay tick spacing is
+whatever the input data uses, not a fixed period), fill/fee counts, and win
+rate over closed positions. `BacktestReport::to_json_pretty()` for machine
+consumption and `to_markdown()` for a human-readable summary — the CLI prints
+the latter and can write the former to a file via `--out`.
+
+**Closed positions come only from stop-loss exits, matching a known live-engine
+limitation**: no strategy shipped in this workspace (`SMA`, `SpreadArb`) emits
+a `Sell`/`Close` signal — both only ever emit `Buy`. `win_rate` and
+`num_closed_positions` will read `0`/`None` for a backtest where nothing
+triggered a stop loss, which is a limitation of the strategies, not the
+backtest engine; flagged here rather than silently under-reported.
+
+**Parameter optimization framework** (`backtest::optimize::optimize_grid`):
+sweeps caller-constructed strategy *instances* (e.g. several
+`SimpleMovingAverageStrategy::new(pair, short, long)` with different window
+sizes), not `StrategyConfig::strategy_config`'s `serde_json::Value` blob —
+every strategy implementation in this workspace ignores that argument
+entirely, so sweeping it would change nothing. Runs each candidate against
+the same historical ticks with a fresh `StrategyManager` (no state leaks
+between runs) and ranks results by a caller-supplied metric function.
+
+**Storage-backed historical loading intentionally not built**: `solstice-storage`'s
+`get_market_data` could in principle back a second data source alongside CSV,
+but there's no live Postgres in this sandbox to build and verify that against,
+and per this session's established pattern, unverified DB integration code
+for a data path a backtest's correctness depends on isn't worth the risk of
+guessing at. CSV loading is fully implemented and tested; storage-backed
+loading is documented here as follow-up work, not silently attempted.
+
+**Verified end to end**: `cargo fmt --check`, `cargo clippy --workspace
+--all-targets --all-features -D warnings`, and `cargo test --workspace` all
+pass clean (22 new tests: fill-model math, CSV parsing/validation,
+equity-curve/Sharpe/drawdown/win-rate computation, and full engine replays —
+including one against the real `SimpleMovingAverageStrategy` that asserts it
+actually buys into a synthetic uptrend and a stop-loss scenario that asserts
+a crash actually closes the position at a loss). Also ran the `backtest`
+binary against a generated 500-point synthetic random-walk CSV and confirmed
+real fills, a real equity curve, and a real Markdown/JSON report — not just a
+clean compile.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started

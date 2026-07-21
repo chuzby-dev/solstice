@@ -235,43 +235,54 @@ Solstice development follows a phased approach with clear milestones and gates. 
 ### Milestones
 
 **6.1 - Simulation Engine** (Week 36-38)
-- [ ] Time-based event loop
-- [ ] Market data replay
-- [ ] Event ordering
-- [ ] State snapshot management
+- [x] Time-based event loop
+- [x] Market data replay
+- [x] Event ordering
+- [x] State snapshot management
 - **Dependencies**: 3.4, 4.4, 1.4
-- **Gate**: Can replay historical data
+- **Gate**: Can replay historical data ✅ COMPLETE
+  (`solstice-simulation::backtest::BacktestEngine`)
 
 **6.2 - Order Simulation** (Week 38-40)
-- [ ] Simulated order execution
-- [ ] Slippage modeling
-- [ ] Partial fill simulation
-- [ ] Fee application
+- [x] Simulated order execution
+- [x] Slippage modeling
+- [x] Partial fill simulation
+- [x] Fee application
 - **Dependencies**: 6.1, 2.3
-- **Gate**: Simulated orders realistic
+- **Gate**: Simulated orders realistic ✅ COMPLETE
+  (`solstice-simulation::backtest::fill_model` — see Phase 6.4 changelog entry
+  for what "realistic" means here: configurable cost models a caller tunes to
+  their own market, not a fit to any specific real venue's microstructure)
 
 **6.3 - Paper Trading Mode** (Week 40-42)
 - [x] Live data + simulated execution
-- [ ] Real-time metrics (console logging only so far; no metrics endpoint)
+- [x] Real-time metrics (`solstice-api`'s `/performance`/`/status` endpoints
+  and dashboard, added Phase 7/8; console logging was the only option when
+  this milestone was first built)
 - [ ] Seamless live transition (N/A until real execution exists)
 - [x] Order simulation in live feed
-- **Dependencies**: 6.1 (not done), 6.2 (not done) — built directly against
-  live on-chain quotes (Raydium + Orca) instead of a replay engine, per
-  explicit user direction to prioritize a runnable live-data demo over
-  roadmap order; Phase 5 (Jito/MEV) and 6.1/6.2 (event-loop replay engine,
-  simulated slippage/partial fills) are skipped for now, not done
+- **Dependencies**: 6.1, 6.2 — originally built directly against live
+  on-chain quotes (Raydium + Orca) instead of a replay engine, per explicit
+  user direction to prioritize a runnable live-data demo over roadmap
+  order, before 6.1/6.2 existed. `PaperTradingEngine` (live) and
+  `BacktestEngine` (historical replay, added afterward) remain two
+  separate engines rather than one generalized over both — see the Phase
+  6.1/6.2/6.4 changelog entry for why. Phase 5 (Jito/MEV) is still skipped.
 - **Gate**: Can paper trade without risk ✅ COMPLETE for the live-quote
   path (`cargo run -p solstice-simulation --bin paper-trade`)
 
 **6.4 - Backtesting Engine** (Week 42-44)
-- [ ] Historical data loading
-- [ ] Performance calculation
-- [ ] Report generation
-- [ ] Parameter optimization framework
+- [x] Historical data loading
+- [x] Performance calculation
+- [x] Report generation
+- [x] Parameter optimization framework
 - **Dependencies**: 6.1
-- **Gate**: Backtest results reproducible
+- **Gate**: Backtest results reproducible ✅ COMPLETE — deterministic replay
+  over a fixed historical series with a fixed config always produces the
+  same report (`cargo run -p solstice-simulation --bin backtest`)
 
-**Phase 6 Gate**: Can validate strategies in simulation before live trading.
+**Phase 6 Gate**: Can validate strategies in simulation before live trading. ✅
+COMPLETE (live paper trading via 6.3, historical backtesting via 6.1/6.2/6.4).
 
 ---
 

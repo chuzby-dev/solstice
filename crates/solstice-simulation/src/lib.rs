@@ -4,6 +4,7 @@
 //! sized, risk-checked, simulated fills. No real transactions are ever
 //! built or submitted.
 
+pub mod backtest;
 pub mod demo;
 pub mod engine;
 pub mod error;

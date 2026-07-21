@@ -10,8 +10,14 @@ pub enum SimulationError {
     #[error("execution error: {0}")]
     Execution(#[from] solstice_execution::ExecutionError),
 
+    #[error("strategy error: {0}")]
+    Strategy(#[from] solstice_strategy::StrategyError),
+
     #[error("no price available for pair")]
     NoPrice,
+
+    #[error("historical data error: {0}")]
+    HistoricalData(String),
 }
 
 pub type SimulationResult<T> = std::result::Result<T, SimulationError>;
