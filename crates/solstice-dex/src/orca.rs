@@ -9,28 +9,38 @@
 //! delegate the actual concentrated-liquidity math (tick crossing, fee
 //! application, sqrt-price arithmetic) to `orca_whirlpools_core` — Orca's
 //! own vetted implementation of that math, not a reimplementation of it
-//! here. `build_swap_instructions` is intentionally *not* implemented: the
-//! on-chain `SwapV2` instruction takes three tick-array accounts whose
-//! required order depends on swap direction, and this integration cannot
-//! confirm that ordering convention against a reference in this
-//! environment. Getting it wrong wouldn't move funds incorrectly (Solana
-//! transactions simulate/fail atomically), but it would silently build a
-//! transaction that always reverts, which is still worth avoiding rather
-//! than guessing — consistent with the same call made for Raydium.
+//! here. `build_swap_instructions` uses `orca_whirlpools_client`'s own
+//! code-generated `SwapV2` instruction builder (`generated::instructions`,
+//! produced directly from Orca's IDL) for account ordering, rather than
+//! hand-assembling it — the account list (including the three tick-array
+//! slots' order) comes from that generated code, not from guessing.
+//! Payer token accounts are derived and idempotently created via
+//! `spl-associated-token-account-interface`, matching the "CreateIdempotent"
+//! step already observed in real Jupiter-routed transactions this session.
+//! Both mints are assumed to use the classic SPL Token program (true for
+//! SOL/USDC and the vast majority of pools); Token-2022 mints would need
+//! each mint's actual owner program looked up instead of this fixed
+//! assumption.
 
 use crate::error::{DexError, DexResult};
 use crate::traits::{DexClient, SwapInstructions};
 use crate::types::{Liquidity, PriceUpdate, Quote, QuoteRequest, RouteSegment, SwapRequest};
 use async_trait::async_trait;
 use chrono::Utc;
-use orca_whirlpools_client::{get_tick_array_address, Whirlpool};
+use orca_whirlpools_client::{
+    get_oracle_address, get_tick_array_address, SwapV2, SwapV2InstructionArgs, Whirlpool,
+};
 use orca_whirlpools_core::{
     get_tick_array_start_tick_index, swap_quote_by_input_token, TickArrayFacade, TickArrays,
     TICK_ARRAY_SIZE,
 };
+use solana_sdk::instruction::{AccountMeta, Instruction};
 use solana_sdk::pubkey::Pubkey;
 use solstice_blockchain::SolanaRpcClient;
+use spl_associated_token_account_interface::address::get_associated_token_address;
+use spl_associated_token_account_interface::instruction::create_associated_token_account_idempotent;
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -38,16 +48,54 @@ use tokio::sync::mpsc;
 const TOKEN_ACCOUNT_AMOUNT_OFFSET: usize = 64;
 const TOKEN_ACCOUNT_AMOUNT_LEN: usize = 8;
 
-/// `orca_whirlpools_client` pins `solana-pubkey` on the `3.x` line, one
-/// major version ahead of this workspace's `solana-sdk` 2.x (which pulls
-/// `solana-pubkey` 2.x) — Cargo resolves them as distinct types, so every
-/// pubkey crossing that boundary needs an explicit byte-level conversion.
+/// `orca_whirlpools_client` (and `spl-associated-token-account-interface`,
+/// used below) pin `solana-pubkey`/`solana-instruction` on the `3.x` line,
+/// one major version ahead of this workspace's `solana-sdk` 2.x — Cargo
+/// resolves them as distinct types, so every value crossing that boundary
+/// needs an explicit conversion. Raydium's equivalent crate (see
+/// `crate::raydium`) happens to resolve to the same 2.x line as
+/// `solana-sdk` already, so it needs no such conversion.
 fn to_sdk_pubkey(address: solana_pubkey_v3::Pubkey) -> Pubkey {
     Pubkey::from(address.to_bytes())
 }
 
 fn to_orca_pubkey(pubkey: &Pubkey) -> solana_pubkey_v3::Pubkey {
     solana_pubkey_v3::Pubkey::from(pubkey.to_bytes())
+}
+
+/// Rebuild a `solana-instruction` v3 `Instruction` (returned by
+/// `orca_whirlpools_client`'s and `spl-associated-token-account-interface`'s
+/// generated builders) as the v2 type the rest of this workspace uses.
+/// Structurally identical (`program_id`/`accounts`/`data`), just a
+/// different major-version crate instance per pubkey/account.
+fn to_sdk_instruction(ix: solana_instruction_v3::Instruction) -> Instruction {
+    Instruction {
+        program_id: to_sdk_pubkey(ix.program_id),
+        accounts: ix
+            .accounts
+            .into_iter()
+            .map(|meta| AccountMeta {
+                pubkey: to_sdk_pubkey(meta.pubkey),
+                is_signer: meta.is_signer,
+                is_writable: meta.is_writable,
+            })
+            .collect(),
+        data: ix.data,
+    }
+}
+
+/// The classic SPL Token program -- see the module doc's note on the
+/// Token-2022 assumption.
+fn token_program_v3() -> solana_pubkey_v3::Pubkey {
+    solana_pubkey_v3::Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+        .expect("TOKEN_PROGRAM_ID is a valid base58 pubkey")
+}
+
+/// The SPL Memo program, required (but unused beyond being referenced) by
+/// `SwapV2`'s account list.
+fn memo_program_v3() -> solana_pubkey_v3::Pubkey {
+    solana_pubkey_v3::Pubkey::from_str("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
+        .expect("memo program id is a valid base58 pubkey")
 }
 
 pub struct OrcaClient {
@@ -112,28 +160,38 @@ impl OrcaClient {
         Ok(u64::from_le_bytes(bytes))
     }
 
-    /// Fetch the (up to) three tick arrays surrounding the pool's current
+    /// Addresses of the three tick arrays surrounding the pool's current
     /// price: the array containing the current tick, and its immediate
-    /// neighbors. Arrays that haven't been initialized on-chain (no
-    /// account exists) are simply omitted rather than erroring, since a
-    /// swap that never needs them will still quote correctly.
-    async fn fetch_surrounding_tick_arrays(
-        &self,
-        pool_address: &Pubkey,
-        pool: &Whirlpool,
-    ) -> DexResult<TickArrays> {
+    /// neighbors. These are always the three accounts `SwapV2` needs,
+    /// independent of whether each one happens to be initialized on-chain
+    /// yet -- unlike [`Self::fetch_surrounding_tick_arrays`], which omits
+    /// uninitialized ones for quoting purposes.
+    fn tick_array_addresses(pool_address: &Pubkey, pool: &Whirlpool) -> DexResult<[Pubkey; 3]> {
         let span = TICK_ARRAY_SIZE as i32 * pool.tick_spacing as i32;
         let current_start =
             get_tick_array_start_tick_index(pool.tick_current_index, pool.tick_spacing);
         let starts = [current_start - span, current_start, current_start + span];
 
         let orca_pool_address = to_orca_pubkey(pool_address);
-        let mut addresses = Vec::with_capacity(3);
-        for start in starts {
+        let mut addresses = [Pubkey::default(); 3];
+        for (i, start) in starts.into_iter().enumerate() {
             let (address, _bump) = get_tick_array_address(&orca_pool_address, start, None)
                 .map_err(|e| DexError::InvalidPoolState(format!("tick array PDA: {e}")))?;
-            addresses.push(to_sdk_pubkey(address));
+            addresses[i] = to_sdk_pubkey(address);
         }
+        Ok(addresses)
+    }
+
+    /// Fetch the (up to) three tick arrays surrounding the pool's current
+    /// price. Arrays that haven't been initialized on-chain (no account
+    /// exists) are simply omitted rather than erroring, since a swap that
+    /// never needs them will still quote correctly.
+    async fn fetch_surrounding_tick_arrays(
+        &self,
+        pool_address: &Pubkey,
+        pool: &Whirlpool,
+    ) -> DexResult<TickArrays> {
+        let addresses = Self::tick_array_addresses(pool_address, pool)?;
 
         let result = self
             .rpc
@@ -284,15 +342,100 @@ impl DexClient for OrcaClient {
 
     async fn build_swap_instructions(
         &self,
-        _swap: &SwapRequest,
+        swap: &SwapRequest,
         _quote: &Quote,
     ) -> DexResult<SwapInstructions> {
-        Err(DexError::InvalidPoolState(
-            "Orca swap instruction building requires a verified tick-array ordering convention \
-             for the on-chain SwapV2 instruction that this integration does not confirm — see \
-             module docs for why"
-                .to_string(),
-        ))
+        let pool_address = self
+            .find_pool(&swap.input_mint, &swap.output_mint)
+            .ok_or(DexError::NoRoute)?;
+
+        let pool = self.fetch_pool(&pool_address).await?;
+        let request = QuoteRequest::new(
+            swap.input_mint,
+            swap.output_mint,
+            swap.amount,
+            swap.slippage_bps,
+        );
+        let (_a_to_b, specified_token_a) = Self::swap_direction(&pool, &request)?;
+        let a_to_b = swap.input_mint == to_sdk_pubkey(pool.token_mint_a);
+
+        // Fresh quote computed here rather than reusing the caller's
+        // `Quote`: `Quote` doesn't carry the slippage-protected minimum
+        // output or the tick-array facades this needs, and re-deriving it
+        // right before building keeps the instruction's numbers as close
+        // to submission time as possible.
+        let tick_arrays = self
+            .fetch_surrounding_tick_arrays(&pool_address, &pool)
+            .await?;
+        let slippage_bps = swap.slippage_bps.min(u16::MAX as u32) as u16;
+        let fresh_quote = swap_quote_by_input_token(
+            swap.amount,
+            specified_token_a,
+            slippage_bps,
+            pool.clone().into(),
+            None,
+            tick_arrays,
+            now_unix(),
+            None,
+            None,
+        )
+        .map_err(|e| DexError::InvalidPoolState(format!("swap quote computation failed: {e:?}")))?;
+
+        let payer = to_orca_pubkey(&swap.payer);
+        let token_program = token_program_v3();
+        let token_owner_account_a = get_associated_token_address(&payer, &pool.token_mint_a);
+        let token_owner_account_b = get_associated_token_address(&payer, &pool.token_mint_b);
+
+        let mut instructions = vec![
+            to_sdk_instruction(create_associated_token_account_idempotent(
+                &payer,
+                &payer,
+                &pool.token_mint_a,
+                &token_program,
+            )),
+            to_sdk_instruction(create_associated_token_account_idempotent(
+                &payer,
+                &payer,
+                &pool.token_mint_b,
+                &token_program,
+            )),
+        ];
+
+        let tick_array_addrs = Self::tick_array_addresses(&pool_address, &pool)?;
+        let (oracle, _bump) = get_oracle_address(&to_orca_pubkey(&pool_address), None)
+            .map_err(|e| DexError::InvalidPoolState(format!("oracle PDA: {e:?}")))?;
+
+        let swap_accounts = SwapV2 {
+            token_program_a: token_program,
+            token_program_b: token_program,
+            memo_program: memo_program_v3(),
+            token_authority: payer,
+            whirlpool: to_orca_pubkey(&pool_address),
+            token_mint_a: pool.token_mint_a,
+            token_mint_b: pool.token_mint_b,
+            token_owner_account_a,
+            token_vault_a: pool.token_vault_a,
+            token_owner_account_b,
+            token_vault_b: pool.token_vault_b,
+            tick_array0: to_orca_pubkey(&tick_array_addrs[0]),
+            tick_array1: to_orca_pubkey(&tick_array_addrs[1]),
+            tick_array2: to_orca_pubkey(&tick_array_addrs[2]),
+            oracle,
+        };
+        let args = SwapV2InstructionArgs {
+            amount: fresh_quote.token_in,
+            other_amount_threshold: fresh_quote.token_min_out,
+            sqrt_price_limit: 0,
+            amount_specified_is_input: true,
+            a_to_b,
+            remaining_accounts_info: None,
+        };
+        instructions.push(to_sdk_instruction(swap_accounts.instruction(args)));
+
+        Ok(SwapInstructions {
+            instructions,
+            address_lookup_tables: Vec::new(),
+        })
     }
 
     async fn subscribe_prices(&self, _markets: &[Pubkey]) -> mpsc::Receiver<PriceUpdate> {

@@ -1461,6 +1461,91 @@ No conversion was executed by this agent.
 
 ---
 
+## [0.1.0-alpha] - 2026-07-21 (Phase 2.2 completed: Orca and Raydium swap execution)
+
+Orca's and Raydium's `build_swap_instructions` had returned a hard error
+since Phase 2.2, on the stated grounds that this integration couldn't
+confirm the required account ordering/layout without guessing at
+real, funds-moving instructions. The user asked what it would actually
+take to finish them. Re-investigating found both blockers were solvable
+with what was already available -- nobody had gone back to check.
+
+### Orca: wired up the crate's own generated instruction builder
+
+`orca_whirlpools_client` (already a dependency, used for quoting) ships a
+`SwapV2` instruction builder generated directly from Orca's IDL
+(`generated::instructions`) -- the exact account ordering the old code
+comment said couldn't be confirmed. Implementation:
+- `spl-associated-token-account-interface` (new dependency) derives the
+  payer's associated token accounts and builds `CreateIdempotent`
+  instructions for both mints, ahead of the swap -- mirroring the same
+  step already observed in real Jupiter-routed transactions this session.
+- A fresh quote (tick arrays + `swap_quote_by_input_token`) is computed
+  inside `build_swap_instructions` itself rather than reusing the
+  caller's `Quote`, keeping `other_amount_threshold` as close to
+  submission time as possible -- same rationale as Jupiter's client.
+- `orca_whirlpools_client` and `spl-associated-token-account-interface`
+  both pin `solana-pubkey`/`solana-instruction` on the `3.x` line, one
+  major version ahead of this workspace's `solana-sdk` 2.x, so every
+  value crossing that boundary needs an explicit conversion (`to_sdk_pubkey`/
+  `to_sdk_instruction`) -- the same pattern already established for
+  quoting, extended to cover instructions too.
+- `tick_array_addresses` extracted as its own helper (previously inlined
+  in the quoting path) since the instruction needs all three tick-array
+  PDAs unconditionally, while quoting only needs whichever ones happen to
+  be initialized on-chain.
+
+### Raydium: hand-parsed the OpenBook market layout after confirming the crate route is dead
+
+`raydium_amm` (already a dependency) also has its own generated
+`SwapBaseIn` builder, and `AmmInfo` (already fetched for quoting) turned
+out to already store `market` and `serum_dex` directly -- fields
+initially assumed missing. What remained was the OpenBook/Serum market's
+own bids/asks/event-queue/vault accounts, which live in a separate
+account this integration wasn't fetching.
+
+The obvious fix -- depend on `openbook_dex`/`serum_dex` for that account's
+struct -- was tried and confirmed dead: added directly, it fails to
+compile even in isolation (`cannot find type Pubkey`, `cannot find
+associated function process_new_order_v3`, from inside the crate's own
+source), on top of pinning `solana-program` 1.10. Reverted.
+
+Instead, parsed the market account's raw bytes directly -- the classic
+Serum v3 / OpenBook v1 layout, unchanged for years. Not transcribed from
+memory and trusted blind: fetched the real OpenBook market for Raydium's
+live SOL/USDC pool (`8BnEgHoWFysVcuFFX7QztDmzuH8r5ZFvyP3sYwn1XTh6`) over
+RPC and confirmed the `own_address` field decodes back to that account's
+own address at every layer of the offset table -- a self-referential
+field that only matches if every prior offset is exactly right. Baked
+that same real account into a committed unit test fixture. The
+`vault_signer` PDA (derived from the market address + the parsed nonce)
+and the `amm authority` PDA (the well-known `b"amm authority"` seed) were
+similarly checked for a valid, non-erroring derivation against that same
+live data before trusting them.
+`raydium_amm`'s pubkey/instruction types happen to already resolve to the
+same `2.x` line as `solana-sdk` (unlike Orca's `3.x`), so none of Orca's
+conversion dance was needed here.
+
+### Verified
+
+`cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features
+-D warnings`, and `cargo test --workspace` all pass clean (11 new tests:
+market-layout parsing against the live fixture, short-data rejection,
+vault-signer PDA derivation, ATA derivation/instruction shape). Beyond
+unit tests, two new `#[ignore]`d live integration tests build real swap
+instructions against Orca's and Raydium's actual live SOL/USDC
+pools/whirlpool over a real mainnet RPC endpoint and check the resulting
+instruction list's shape -- both pass. Every pool/program address used
+(the Orca whirlpool, the Raydium pool, its OpenBook market, the Raydium
+program id) was independently confirmed against Orca's and Raydium's own
+public APIs before being trusted, not assumed from memory. No transaction
+was signed or submitted by this agent -- this closes the "can't build
+instructions" gap; actually trading through either DEX for real remains
+gated the same way every other swap in this codebase is (the `trade` CLI's
+`SEND` confirmation, or the live engine's armed kill switch).
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started
