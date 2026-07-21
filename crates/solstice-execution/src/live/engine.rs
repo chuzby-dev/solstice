@@ -18,7 +18,7 @@ use crate::jito::{JitoClient, JitoConfig};
 use crate::order_manager::{Fill, OrderManager};
 use crate::planner::{signal_pair, ExecutionPlan};
 use crate::position_sizing::{PositionSizer, RiskParams};
-use crate::risk::{PreTradeRiskChecker, StopLossManager, TradeApproval};
+use crate::risk::{PreTradeRiskChecker, StopLossManager, TakeProfitManager, TradeApproval};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use solana_sdk::pubkey::Pubkey;
@@ -90,6 +90,9 @@ pub enum LiveEvent {
     MinConfidenceChanged {
         min_confidence: f64,
     },
+    TakeProfitPercentChanged {
+        take_profit_percent: f64,
+    },
     TickCompleted {
         timestamp: DateTime<Utc>,
         signal_count: usize,
@@ -112,6 +115,7 @@ pub struct LiveStatusSnapshot {
     pub wallet_address: String,
     pub max_capital_usd: f64,
     pub min_confidence: f64,
+    pub take_profit_percent: f64,
     pub capital_deployed_usd: f64,
     pub capital_available_usd: f64,
     pub realized_pnl_usd: f64,
@@ -300,6 +304,18 @@ impl LiveTradingEngine {
         self.emit(LiveEvent::MinConfidenceChanged { min_confidence });
     }
 
+    /// Set the fractional gain at which an open position auto-closes.
+    /// Read fresh from config on every `evaluate_stop_losses` call, so a
+    /// change takes effect on the next tick, not on next restart.
+    pub fn set_take_profit_percent(&self, take_profit_percent: f64) {
+        let mut config = self.config.lock().expect("config lock poisoned");
+        config.take_profit_percent = take_profit_percent;
+        drop(config);
+        self.emit(LiveEvent::TakeProfitPercentChanged {
+            take_profit_percent,
+        });
+    }
+
     fn pair_label(&self, pair: &TokenPair) -> String {
         self.pairs
             .iter()
@@ -318,6 +334,7 @@ impl LiveTradingEngine {
             wallet_address: self.wallet_pubkey.to_string(),
             max_capital_usd: config.max_capital_usd,
             min_confidence: config.min_confidence,
+            take_profit_percent: config.take_profit_percent,
             capital_deployed_usd,
             capital_available_usd: (config.max_capital_usd - capital_deployed_usd).max(0.0),
             realized_pnl_usd: *self.realized_pnl_usd.lock().expect("lock poisoned"),
@@ -904,11 +921,29 @@ impl LiveTradingEngine {
         }
     }
 
+    /// Evaluates both exit paths for every open position: stop-loss (fixed
+    /// at construction, like `risk_limits`) and take-profit (read fresh
+    /// from config each tick so `set_take_profit_percent` takes effect
+    /// immediately, matching `min_confidence`'s pattern). Neither SMA nor
+    /// SpreadArb ever emits its own exit signal, so this is the only path
+    /// a profitable position closes through.
     async fn evaluate_stop_losses(&self, _snapshot: &MarketSnapshot) {
         let portfolio_state = self.portfolio_state();
-        let triggers = self.stop_loss.evaluate_stops(&portfolio_state.positions);
 
-        for trigger in triggers {
+        let stop_triggers = self.stop_loss.evaluate_stops(&portfolio_state.positions);
+        for trigger in stop_triggers {
+            self.close_position(trigger.position_id, trigger.reason)
+                .await;
+        }
+
+        let take_profit_percent = self
+            .config
+            .lock()
+            .expect("config lock poisoned")
+            .take_profit_percent;
+        let profit_triggers = TakeProfitManager::new(take_profit_percent)
+            .evaluate_targets(&portfolio_state.positions);
+        for trigger in profit_triggers {
             self.close_position(trigger.position_id, trigger.reason)
                 .await;
         }
@@ -1125,6 +1160,7 @@ mod tests {
             kelly_fraction: 0.5,
             default_win_loss_ratio: 2.0,
             stop_loss_percent: 0.1,
+            take_profit_percent: 0.05,
             slippage_bps: 50,
             poll_interval: Duration::from_secs(3600),
             tip_lamports: None,
@@ -1386,6 +1422,55 @@ mod tests {
         assert!(
             saw_would_trade,
             "expected a WouldTrade event while disabled"
+        );
+    }
+
+    #[test]
+    fn test_set_take_profit_percent_updates_status() {
+        let pair = test_pair();
+        let engine = test_engine(pair, 50.0);
+        assert_eq!(engine.status().take_profit_percent, 0.05);
+
+        engine.set_take_profit_percent(0.1);
+        assert_eq!(engine.status().take_profit_percent, 0.1);
+    }
+
+    #[tokio::test]
+    async fn test_evaluate_stop_losses_flags_position_beyond_take_profit() {
+        let pair = test_pair();
+        let token_pair = TokenPair::new(pair.base_mint, pair.quote_mint);
+        let engine = test_engine(pair, 50.0);
+        assert!(!engine.is_enabled());
+
+        // +10% gain, above the 5% default take-profit target.
+        engine.positions.lock().unwrap().insert(
+            token_pair,
+            LivePosition {
+                id: PositionId::new(),
+                pair: token_pair,
+                quantity_raw: 1_000_000_000,
+                entry_price: 100.0,
+                current_price: 110.0,
+                allocated_usd: 10.0,
+                opened_at: Utc::now(),
+            },
+        );
+
+        let snapshot = snapshot_with_price(token_pair, 110.0);
+        let mut events = engine.subscribe();
+        engine.evaluate_stop_losses(&snapshot).await;
+
+        let mut saw_take_profit_skip = false;
+        while let Ok(event) = events.try_recv() {
+            if let LiveEvent::SignalSkipped { reason, .. } = event {
+                if reason.contains("take profit") {
+                    saw_take_profit_skip = true;
+                }
+            }
+        }
+        assert!(
+            saw_take_profit_skip,
+            "expected a take-profit close attempt while disabled"
         );
     }
 }

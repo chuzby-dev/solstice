@@ -129,6 +129,7 @@ export interface LiveStatusResponse {
   wallet_address: string;
   max_capital_usd: number;
   min_confidence: number;
+  take_profit_percent: number;
   capital_deployed_usd: number;
   capital_available_usd: number;
   realized_pnl_usd: number;
@@ -161,4 +162,5 @@ export type LiveEvent =
   | { type: 'LiveTradingDisabled' }
   | { type: 'MaxCapitalChanged'; max_capital_usd: number }
   | { type: 'MinConfidenceChanged'; min_confidence: number }
+  | { type: 'TakeProfitPercentChanged'; take_profit_percent: number }
   | { type: 'TickCompleted'; timestamp: string; signal_count: number };

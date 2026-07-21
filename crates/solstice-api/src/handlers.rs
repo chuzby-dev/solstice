@@ -257,5 +257,14 @@ pub async fn live_set_config(
         live.set_min_confidence(min_confidence);
     }
 
+    if let Some(take_profit_percent) = body.take_profit_percent {
+        if !take_profit_percent.is_finite() || take_profit_percent <= 0.0 {
+            return Err(ApiError::BadRequest(
+                "take_profit_percent must be a positive finite number".to_string(),
+            ));
+        }
+        live.set_take_profit_percent(take_profit_percent);
+    }
+
     Ok(Json(live.status()))
 }

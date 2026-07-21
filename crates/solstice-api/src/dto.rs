@@ -19,6 +19,9 @@ pub struct LiveConfigRequest {
     pub max_capital_usd: Option<f64>,
     /// Minimum signal confidence (0.0-1.0) required to act on a signal.
     pub min_confidence: Option<f64>,
+    /// Fractional gain (e.g. `0.05` = 5%) at which an open position
+    /// auto-closes.
+    pub take_profit_percent: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

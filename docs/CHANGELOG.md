@@ -1719,6 +1719,64 @@ asserts the swap instruction's data is exactly 17 bytes, starts with tag
 
 ---
 
+## [0.1.0-alpha] - 2026-07-21 (Live take-profit auto-exit)
+
+### Problem
+
+With Orca/Raydium execution and `SpreadArbitrageStrategy` wired into live
+trading, the user asked how a fully-deployed live position would ever
+exit. The answer: it wouldn't, on a gain. Neither `SimpleMovingAverageStrategy`
+nor `SpreadArbitrageStrategy` ever emits a `Sell` signal (both are
+directional buy-only bets), and the only exit path in `LiveTradingEngine`
+was `StopLossManager`, which only fires on a loss. Once capital was fully
+deployed, a profitable position would simply sit, unrealized, indefinitely.
+
+### Fix
+
+Added `TakeProfitManager` (`crates/solstice-execution/src/risk/take_profit.rs`),
+structurally mirroring `StopLossManager` exactly -- same long-only filter,
+same percentage-move math, opposite sign. `LiveTradingConfig` gained a
+`take_profit_percent` field (default `0.05`, i.e. 5%). Rather than caching
+a fixed `TakeProfitManager` instance at construction (as `stop_loss` is,
+which means changing `stop_loss_percent` post-construction currently has
+no effect -- a pre-existing quirk, left alone), `evaluate_stop_losses`
+builds a fresh `TakeProfitManager` from `config.take_profit_percent` on
+every call, so `set_take_profit_percent` takes effect on the very next
+tick, matching how `min_confidence` already behaves.
+
+`set_take_profit_percent` mirrors `set_min_confidence`/`set_max_capital_usd`:
+updates the config `Mutex` and emits a new `LiveEvent::TakeProfitPercentChanged`.
+Wired end to end: `LiveStatusSnapshot.take_profit_percent`, the
+`POST /api/v1/live/config` handler (validates `take_profit_percent > 0`),
+the dashboard's `LiveStatusResponse`/`LiveEvent` types, `client.ts`
+(`liveSetTakeProfitPercent`), and a new stat tile + input control on
+`LiveTradingPage.tsx` mirroring the existing min-confidence card.
+
+### Verified
+
+`cargo fmt --all`, `cargo clippy --workspace --lib --bins --tests
+--all-features -D warnings`, and `cargo test --workspace` (via
+`--exclude solstice-api` plus `-p solstice-api --lib` separately, per the
+established workaround for the running `serve.exe` binary lock) all pass
+clean. `npx tsc --noEmit` in `dashboard/` passes clean. New tests:
+`TakeProfitManager`'s 4 unit tests (mirroring `StopLossManager`'s),
+`test_set_take_profit_percent_updates_status`, and
+`test_evaluate_stop_losses_flags_position_beyond_take_profit` (inserts a
+position with a +10% gain against a 5% target, calls `evaluate_stop_losses`
+directly on a disabled engine, confirms a take-profit close attempt is
+emitted via `LiveEvent::SignalSkipped` -- disabled so the assertion needs
+no network).
+
+At the time this landed, the live server had a real, fully-deployed $15
+SOL/USDC position open. Per the established safety practice, restarting
+to pick up this change was held pending explicit user confirmation rather
+than done automatically, since restarting resets in-memory position
+tracking (the position itself stays on-chain, just untracked and
+unprotected by stop-loss/take-profit until the engine is told about it
+again).
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started

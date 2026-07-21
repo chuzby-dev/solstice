@@ -47,6 +47,14 @@ pub struct LiveTradingConfig {
     pub kelly_fraction: f64,
     pub default_win_loss_ratio: f64,
     pub stop_loss_percent: f64,
+    /// Fractional gain (e.g. `0.05` = 5%) at which an open position is
+    /// automatically closed. Without this, a position opened by a
+    /// strategy that never itself signals an exit (SMA/SpreadArb, as
+    /// currently configured) would only ever close on a loss (via
+    /// `stop_loss_percent`) or sit indefinitely once capital is fully
+    /// deployed. Adjustable at runtime via
+    /// `LiveTradingEngine::set_take_profit_percent`.
+    pub take_profit_percent: f64,
     /// Slippage tolerance passed to Jupiter for both price sampling and
     /// execution quotes. `execute_planned_trade` re-fetches a quote right
     /// before submitting, but `JupiterClient::build_swap_instructions`
@@ -99,6 +107,7 @@ impl Default for LiveTradingConfig {
             kelly_fraction: 0.25,
             default_win_loss_ratio: 2.0,
             stop_loss_percent: 0.1,
+            take_profit_percent: 0.05,
             slippage_bps: 150,
             poll_interval: Duration::from_secs(15),
             tip_lamports: None,

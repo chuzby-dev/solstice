@@ -62,6 +62,8 @@ export const api = {
     postJson<LiveStatusResponse>('/live/config', { max_capital_usd }),
   liveSetMinConfidence: (min_confidence: number) =>
     postJson<LiveStatusResponse>('/live/config', { min_confidence }),
+  liveSetTakeProfitPercent: (take_profit_percent: number) =>
+    postJson<LiveStatusResponse>('/live/config', { take_profit_percent }),
 };
 
 export function wsUrl(): string {

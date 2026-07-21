@@ -46,6 +46,11 @@ function describeLiveEvent(event: LiveEvent): { text: string; tone: 'neutral' | 
         text: `Minimum confidence to act changed to ${(event.min_confidence * 100).toFixed(0)}%`,
         tone: 'neutral',
       };
+    case 'TakeProfitPercentChanged':
+      return {
+        text: `Take-profit target changed to ${(event.take_profit_percent * 100).toFixed(0)}%`,
+        tone: 'neutral',
+      };
     case 'TickCompleted':
       return { text: `Tick complete — ${event.signal_count} signal(s)`, tone: 'neutral' };
   }
@@ -63,6 +68,7 @@ export function LiveTradingPage() {
   const { events } = useLiveEvents();
   const [maxCapitalInput, setMaxCapitalInput] = useState('');
   const [minConfidenceInput, setMinConfidenceInput] = useState('');
+  const [takeProfitInput, setTakeProfitInput] = useState('');
   const [confirmText, setConfirmText] = useState('');
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -96,6 +102,24 @@ export function LiveTradingPage() {
     try {
       await api.liveSetMinConfidence(percent / 100);
       setMinConfidenceInput('');
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSetTakeProfit = async () => {
+    const percent = Number(takeProfitInput);
+    if (!Number.isFinite(percent) || percent <= 0 || percent > 1000) {
+      setActionError('Enter a valid positive percentage.');
+      return;
+    }
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api.liveSetTakeProfitPercent(percent / 100);
+      setTakeProfitInput('');
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -162,6 +186,10 @@ export function LiveTradingPage() {
             <StatTile
               label="Min confidence to act"
               value={`${(status.min_confidence * 100).toFixed(0)}%`}
+            />
+            <StatTile
+              label="Take-profit target"
+              value={`${(status.take_profit_percent * 100).toFixed(0)}%`}
             />
           </div>
 
@@ -262,6 +290,35 @@ export function LiveTradingPage() {
               <p className="mt-2 text-xs text-[var(--text-muted)]">
                 Signals below this confidence are skipped entirely, regardless of direction.
                 Default 65%.
+              </p>
+            </div>
+
+            {/* Take-profit target */}
+            <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-1)] p-4">
+              <div className="mb-3 text-sm font-medium text-[var(--text-secondary)]">
+                Take-profit target ({(status.take_profit_percent * 100).toFixed(0)}% currently)
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={takeProfitInput}
+                  onChange={(e) => setTakeProfitInput(e.target.value)}
+                  placeholder="e.g. 5"
+                  className="flex-1 rounded-md border border-[var(--border)] bg-[var(--page)] px-3 py-2 text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={handleSetTakeProfit}
+                  disabled={busy || takeProfitInput === ''}
+                  className="shrink-0 rounded-md border border-[var(--border)] px-3 py-2 text-sm font-medium hover:bg-[var(--border)] disabled:opacity-40"
+                >
+                  Save
+                </button>
+              </div>
+              <p className="mt-2 text-xs text-[var(--text-muted)]">
+                An open position auto-closes once its gain crosses this threshold. Default 5%.
               </p>
             </div>
           </div>
