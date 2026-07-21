@@ -384,49 +384,74 @@ impl LiveTradingEngine {
         Ok(signals)
     }
 
+    /// Samples each registered DEX *individually* (Jupiter always,
+    /// Orca/Raydium wherever a pair has a known pool) rather than just the
+    /// aggregator's single best-route price -- `SpreadArbitrageStrategy`
+    /// needs more than one source's `Price` per pair in the snapshot to
+    /// detect a spread at all; collapsing to one "best" number the way
+    /// execution does would make it permanently silent. Mirrors
+    /// `solstice_simulation::PaperTradingEngine::sample_market`'s pattern.
     async fn sample_market(&self) -> ExecutionResult<MarketSnapshot> {
         let mut snapshot = MarketSnapshot::new(0);
 
         for pair in &self.pairs {
+            let slippage_bps = self
+                .config
+                .lock()
+                .expect("config lock poisoned")
+                .slippage_bps;
             let quote_request = QuoteRequest::new(
                 pair.base_mint,
                 pair.quote_mint,
                 pair.reference_amount,
-                self.config
-                    .lock()
-                    .expect("config lock poisoned")
-                    .slippage_bps,
+                slippage_bps,
             );
-            match self.dex.get_best_route(&quote_request).await {
-                Ok(quote) => {
-                    let price = pair_price(pair, &quote);
-                    self.emit(LiveEvent::PriceUpdate {
-                        pair_label: pair.label.to_string(),
-                        price,
-                        timestamp: Utc::now(),
-                    });
+            let token_pair = TokenPair::new(pair.base_mint, pair.quote_mint);
 
-                    let token_pair = TokenPair::new(pair.base_mint, pair.quote_mint);
-                    if let Some(position) = self
-                        .positions
-                        .lock()
-                        .expect("lock poisoned")
-                        .get_mut(&token_pair)
-                    {
-                        position.current_price = price;
-                    }
-
-                    snapshot.prices.insert(
-                        token_pair,
-                        vec![solstice_core::types::Price {
+            let mut observations = Vec::with_capacity(3);
+            for (name, has_pool) in [
+                ("Jupiter", true),
+                ("Raydium", pair.raydium_pool.is_some()),
+                ("Orca", pair.orca_pool.is_some()),
+            ] {
+                if !has_pool {
+                    continue;
+                }
+                let Ok(client) = self.dex.get_client(name) else {
+                    continue;
+                };
+                match client.get_quote(&quote_request).await {
+                    Ok(quote) => {
+                        let price = pair_price(pair, &quote);
+                        self.emit(LiveEvent::PriceUpdate {
+                            pair_label: format!("{} ({name})", pair.label),
+                            price,
+                            timestamp: Utc::now(),
+                        });
+                        observations.push(solstice_core::types::Price {
                             value: price,
                             pair: token_pair,
                             timestamp: Utc::now(),
                             confidence: 0.9,
-                        }],
-                    );
+                        });
+                    }
+                    Err(e) => warn!("[{}] {name} quote failed: {}", pair.label, e),
                 }
-                Err(e) => warn!("[{}] failed to fetch live quote: {}", pair.label, e),
+            }
+
+            if let Some(latest) = observations.last() {
+                if let Some(position) = self
+                    .positions
+                    .lock()
+                    .expect("lock poisoned")
+                    .get_mut(&token_pair)
+                {
+                    position.current_price = latest.value;
+                }
+            }
+
+            if !observations.is_empty() {
+                snapshot.prices.insert(token_pair, observations);
             }
         }
 

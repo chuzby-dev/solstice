@@ -17,7 +17,7 @@ use solstice_dex::JupiterClient;
 use solstice_execution::jito::{JitoClient, JitoConfig};
 use solstice_execution::{LiveTradedPair, LiveTradingConfig, LiveTradingEngine};
 use solstice_simulation::build_sol_usdc_demo_engine;
-use solstice_strategy::strategies::sma::SimpleMovingAverageStrategy;
+use solstice_strategy::strategies::{SimpleMovingAverageStrategy, SpreadArbitrageStrategy};
 use solstice_strategy::{StrategyConfig, StrategyManager};
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -150,6 +150,10 @@ async fn async_main() {
                         )))
                         .await
                         .expect("failed to register live SMA strategy");
+                    live_strategies
+                        .register_strategy(Arc::new(SpreadArbitrageStrategy::new(10))) // 0.1% Raydium/Orca spread
+                        .await
+                        .expect("failed to register live SpreadArb strategy");
 
                     // Reload the wallet file separately: `LiveTradingEngine`
                     // owns its own `WalletFile` handle (it re-reads the

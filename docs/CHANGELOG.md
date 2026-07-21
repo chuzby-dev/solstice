@@ -1596,6 +1596,63 @@ and rebuilt/restarted on the new binary.
 
 ---
 
+## [0.1.0-alpha] - 2026-07-21 (Live spread arbitrage: SpreadArbitrageStrategy wired in)
+
+The user noticed the Overview page showing paper-only `SpreadArb` fills
+and asked why live trading "doesn't appear to be trading arb." Root
+cause: the previous entry wired Orca/Raydium into *execution routing*
+(best price for whatever SMA decides to trade) but never registered
+`SpreadArbitrageStrategy` itself in the live engine -- it was SMA-only.
+Separately, clarified for the user that the Overview page is *always*
+the paper engine ($10k simulated capital, runs regardless of live
+state) and the Wallet page's devnet balance is just informational
+display, not an indication live trading touches devnet.
+
+### `sample_market` now samples each DEX individually, not just the best route
+
+`SpreadArbitrageStrategy` needs *more than one* price observation per
+pair per tick to ever detect a spread (`MarketSnapshot::prices[pair]`
+must have 2+ entries) -- but `sample_market` had been collapsed to a
+single aggregator best-route price since the previous entry, meaning the
+strategy could never have fired even once it was registered. Rewrote
+`sample_market` to query Jupiter, Raydium, and Orca each individually
+(skipping Raydium/Orca for a pair with no known pool) and insert every
+successful observation, mirroring `PaperTradingEngine::sample_market`'s
+exact pattern. Position `current_price` tracking now uses the
+last-sampled observation rather than a single aggregator call.
+`LiveEvent::PriceUpdate.pair_label` now includes which DEX each reading
+came from (e.g. `"SOL/USDC (Orca)"`), since there are multiple readings
+per tick now instead of one.
+
+`SpreadArbitrageStrategy::new(10)` (0.1% Raydium/Orca spread, same
+threshold as the paper engine's) registered alongside SMA in
+`serve.rs`'s live `StrategyManager`.
+
+### What this does and doesn't do
+
+Worth being explicit about: `SpreadArbitrageStrategy` only ever emits a
+`Buy` signal when the spread exceeds the threshold -- it does not itself
+specify a venue or attempt a true simultaneous two-leg arbitrage (buy
+cheap, sell expensive, in the same breath). It's a directional signal
+("the spread widened, take a position") sized and risk-checked exactly
+like an SMA signal, then executed through whichever DEX the aggregator's
+`get_best_route` finds cheapest at that moment -- which in practice tends
+to be favorable, but this is not risk-free arbitrage in the strict sense.
+
+### Verified
+
+`cargo fmt --all`, `cargo clippy --workspace --lib --bins --tests
+--all-features -D warnings`, and `cargo test --workspace` all pass clean
+(existing `SpreadArbitrageStrategy`/`sample_market`-adjacent tests
+already covered the strategy logic itself; this change is wiring, not
+new decision logic). Server startup logs confirmed both strategies
+register (`Registered strategy: SMA v1.0.0`, `Registered strategy:
+SpreadArb v1.0.0`) and live per-DEX price sampling flows
+(`[SOL/USDC] Raydium: $77.52`, `[SOL/USDC] Orca: $77.90`-style log
+lines now also emitted from the live engine, not just the paper one).
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started
