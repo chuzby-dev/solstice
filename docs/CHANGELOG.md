@@ -6,6 +6,68 @@
 
 ---
 
+## [0.1.0-alpha] - 2026-07-22 (Two real cross-DEX arb incidents: RPC-lag false failure, then wrong-sized attempt)
+
+### Incident 1: "buy leg landed but no base token balance increase was observed"
+
+The user reported this exact `CrossDexArbFailed` event from a real live
+attempt. Investigated directly against mainnet (`getTransaction` on the
+signature history, `getTokenAccountsByOwner` for the live balance) rather
+than guessing: the buy leg had genuinely succeeded -- 15 USDC correctly
+swapped for 0.192105083 SOL via Raydium, landed and finalized, funds
+fully intact in a newly-created wrapped-SOL token account. **No money was
+lost.** The false failure came from `execute_cross_dex_arb` reading the
+post-buy balance exactly once, immediately after the transaction
+confirmed -- Helius (like most RPC providers) load-balances across
+nodes, and the node that answered that particular read hadn't yet caught
+up to the just-landed account creation, so it reported a stale 0. Fixed
+by retrying the balance read up to 5 times with a 500ms delay before
+concluding the buy produced nothing (`execute_cross_dex_arb` in
+`crates/solstice-execution/src/live/engine.rs`).
+
+Because the fix landed after the incident, that 0.192105083 SOL is real
+but was left untracked (no position registered, unprotected by
+stop-loss/take-profit, not shown in the dashboard's wallet balance view
+since that reads native lamports, not wrapped-SOL token account
+balances) -- flagged to the user directly; not silently reconciled, since
+adopting an untracked balance as a position is a real accounting
+decision, not a bug fix.
+
+### Incident 2: "insufficient funds" (Raydium custom error 0x28)
+
+A direct consequence of Incident 1: with the earlier buy's $15 never
+recorded in `capital_deployed_usd`, the engine's internal bookkeeping
+still believed the full configured capital was available and sized a new
+buy attempt at $15 -- but the wallet's actual USDC balance was only
+$7.75 (the other $15 already spent, sitting as that untracked SOL).
+Raydium's own pre-broadcast simulation caught this safely (0x28 =
+insufficient funds; nothing landed, no fee charged) -- but it would keep
+recurring, and worse, could eventually size a trade for whatever amount
+narrowly *does* clear a stale balance check, still against a wrong
+number.
+
+Fixed by capping the trade size against the wallet's real, freshly-queried
+quote-token balance (`SolanaRpcClient::get_token_balance`) in addition to
+the existing internal-bookkeeping headroom calculation -- whichever is
+smaller wins, so stale internal tracking can only ever make the executor
+*skip* an opportunity it shouldn't attempt, never submit one the wallet
+can't actually cover. `CrossDexArbFailed`'s "sizing" reason now reports
+both the configured headroom and the actual wallet balance when it
+declines to trade.
+
+### Verified
+
+`cargo fmt --all`, `cargo clippy --workspace --lib --bins --tests
+--all-features -D warnings`, `cargo test --workspace` (`--exclude
+solstice-api` plus `-p solstice-api --lib` separately) all pass clean --
+all 22 existing `live::engine` tests still pass unchanged; no new tests
+added for the retry loop or balance cap specifically, since both touch
+real RPC calls the same way `find_arb_opportunity`/`execute_cross_dex_arb`
+already do, consistent with this codebase's established pattern of not
+unit-testing network-dependent paths directly.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-21 (Independent strategies on/off switch)
 
 ### Problem

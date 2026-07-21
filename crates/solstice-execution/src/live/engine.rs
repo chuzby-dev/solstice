@@ -1191,27 +1191,47 @@ impl LiveTradingEngine {
             return;
         }
 
-        let (size_usd, slippage_bps, tip_lamports) = {
+        let (configured_size_usd, min_position_size_usd, slippage_bps, tip_lamports) = {
             let config = self.config.lock().expect("config lock poisoned");
             let capital_deployed_usd = *self.capital_deployed_usd.lock().expect("lock poisoned");
             let remaining_headroom = (config.risk_limits.position.max_single_position_usd as f64)
                 .min(config.max_capital_usd - capital_deployed_usd)
                 .max(0.0);
-            let min_position_size_usd = config.risk_limits.position.min_position_size_usd as f64;
-            if remaining_headroom < min_position_size_usd {
-                self.emit(LiveEvent::CrossDexArbFailed {
-                    pair_label,
-                    leg: "sizing".to_string(),
-                    reason: "insufficient capital headroom for a cross-DEX arb trade".to_string(),
-                });
-                return;
-            }
             (
-                remaining_headroom.floor() as u64,
+                remaining_headroom,
+                config.risk_limits.position.min_position_size_usd as f64,
                 config.cross_dex_max_slippage_bps,
                 config.tip_lamports,
             )
         };
+
+        // `configured_size_usd` comes from internal bookkeeping
+        // (`capital_deployed_usd`), which can drift from on-chain reality
+        // -- e.g. a prior buy leg that landed but wasn't tracked (see the
+        // balance-delta retry below) leaves `capital_deployed_usd`
+        // understating what's actually already committed. Capping against
+        // the wallet's real quote-token balance means a stale bookkeeping
+        // number can only make this *skip* a trade it shouldn't attempt,
+        // never submit one the wallet can't actually cover.
+        let quote_balance_raw = self
+            .rpc
+            .get_token_balance(&self.wallet_pubkey, &pair.quote_mint)
+            .await
+            .unwrap_or(0);
+        let quote_balance_usd = quote_balance_raw as f64 / 10f64.powi(pair.quote_decimals as i32);
+        let size_usd = configured_size_usd.min(quote_balance_usd);
+
+        if size_usd < min_position_size_usd {
+            self.emit(LiveEvent::CrossDexArbFailed {
+                pair_label,
+                leg: "sizing".to_string(),
+                reason: format!(
+                    "insufficient capital for a cross-DEX arb trade (configured headroom {configured_size_usd:.2}, actual wallet balance {quote_balance_usd:.2})"
+                ),
+            });
+            return;
+        }
+        let size_usd = size_usd.floor() as u64;
 
         let keypair = match self.wallet_file.load_keypair() {
             Ok(kp) => kp,
@@ -1310,27 +1330,48 @@ impl LiveTradingEngine {
         // Leg 1 landed. Read the actual received quantity from the
         // balance delta rather than trusting `buy_quote.out_amount` --
         // the two legs are separate transactions, not atomic, so the
-        // real fill can differ from the quote.
-        let base_balance_after = match self
-            .rpc
-            .get_token_balance(&self.wallet_pubkey, &pair.base_mint)
-            .await
-        {
-            Ok(b) => b,
-            Err(e) => {
-                warn!(
-                    "failed to read post-buy balance for {}: {} -- falling back to quoted amount",
-                    pair_label, e
-                );
-                base_balance_before.saturating_add(buy_quote.out_amount)
+        // real fill can differ from the quote. A single immediate read
+        // isn't reliable: a load-balanced RPC provider can answer from a
+        // node that hasn't yet caught up to the just-landed transaction,
+        // reading back a stale (pre-buy) balance even though the swap
+        // genuinely succeeded -- confirmed directly against a real
+        // transaction that landed a buy correctly but was reported as
+        // failed for exactly this reason. Retry briefly before concluding
+        // the buy produced nothing.
+        let mut received_quantity = 0u64;
+        for attempt in 0..5 {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_millis(500)).await;
             }
-        };
-        let received_quantity = base_balance_after.saturating_sub(base_balance_before);
+            let base_balance_after = match self
+                .rpc
+                .get_token_balance(&self.wallet_pubkey, &pair.base_mint)
+                .await
+            {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!(
+                        "failed to read post-buy balance for {} (attempt {}): {}",
+                        pair_label,
+                        attempt + 1,
+                        e
+                    );
+                    continue;
+                }
+            };
+            received_quantity = base_balance_after.saturating_sub(base_balance_before);
+            if received_quantity > 0 {
+                break;
+            }
+        }
         if received_quantity == 0 {
             self.emit(LiveEvent::CrossDexArbFailed {
                 pair_label,
                 leg: "buy".to_string(),
-                reason: "buy leg landed but no base token balance increase was observed"
+                reason: "buy leg landed but no base token balance increase was observed after \
+                         retrying -- if the wallet's actual balance did increase, this was a \
+                         read-consistency failure, not a lost trade; check on-chain state before \
+                         assuming funds are missing"
                     .to_string(),
             });
             return;
