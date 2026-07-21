@@ -1,4 +1,7 @@
 import type {
+  ConvertRequest,
+  ConvertResponse,
+  DevnetBalanceResponse,
   LiveStatusResponse,
   PerformanceResponse,
   PositionsResponse,
@@ -49,6 +52,9 @@ export const api = {
   trades: () => getJson<TradesResponse>('/trades'),
   performance: () => getJson<PerformanceResponse>('/performance'),
   wallet: () => getOptional<WalletResponse>('/wallet'),
+  walletDevnet: () => getOptional<DevnetBalanceResponse>('/wallet/devnet'),
+  walletConvert: (request: ConvertRequest) =>
+    postJson<ConvertResponse>('/wallet/convert', request),
   liveStatus: () => getOptional<LiveStatusResponse>('/live/status'),
   liveEnable: () => postJson<LiveStatusResponse>('/live/enable'),
   liveDisable: () => postJson<LiveStatusResponse>('/live/disable'),

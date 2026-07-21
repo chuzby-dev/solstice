@@ -1369,6 +1369,98 @@ binary each time, same wallet re-confirmed via `/api/v1/wallet`.
 
 ---
 
+## [0.1.0-alpha] - 2026-07-21 (Wallet page: USDC + devnet balances, manual SOL⇄USDC convert)
+
+The user asked for the Wallet page to show SOL and USDC balance for live
+(mainnet), balance for devnet, and a way to convert between SOL and USDC.
+Asked first whether "auto convert" meant manual (click to convert, once,
+with confirmation) or fully automatic rebalancing armed once like the
+live trading engine -- the user chose manual, on-demand.
+
+### New: `SolanaRpcClient::get_token_balance`
+
+No SPL-token balance reader existed yet. Added
+`get_token_balance(owner, mint)`, mirroring `get_balance`'s failover/retry
+pattern and its "no token account yet is a normal state" philosophy (`Ok(0)`,
+not an error). Uses `getTokenAccountsByOwner` with `jsonParsed` encoding
+(the RPC method's default) and sums every matching account's parsed
+`tokenAmount.amount` -- permissive by design, since this is a best-effort
+display quantity, not something that gates a real transaction.
+`solana-account-decoder-client-types` added as a new direct workspace
+dependency for `UiAccountData`, rather than relying on a fragile
+re-export chain through `solana-client`.
+
+### Changed: `GET /api/v1/wallet` now includes USDC balance
+
+`WalletResponse` gained `usdc_balance_raw`/`usdc_balance`. The doc
+comment's old claim that this server has "no field or endpoint that can
+move funds" is no longer true as of this entry (see below), so it was
+corrected rather than left stale.
+
+### New: `GET /api/v1/wallet/devnet`
+
+Same wallet address, same keypair, but devnet and mainnet are separate
+ledgers -- this reports the devnet SOL balance side by side with mainnet
+(useful here specifically because this wallet has leftover devnet SOL
+from earlier faucet-funded testing in Phase 10.3).
+
+### New: `POST /api/v1/wallet/convert` -- a real, user-initiated swap
+
+**Executes a real, irreversible on-chain SOL<->USDC swap** using the
+configured wallet's own funds, in whichever direction the caller
+requests. This is the first API endpoint in this server that can
+actually move funds, and it was built with the same discipline as
+everywhere else real money is involved in this codebase:
+- New `ConvertState` (`solstice-api::state`) holds a `WalletFile` (not a
+  loaded key), an RPC client, a `JitoClient`, and a `JupiterClient`.
+  `WalletFile` reads the private key from disk transiently, only at the
+  moment a request is actually being signed, and only in response to a
+  request this server received -- never on a timer, never proactively.
+  Wrapped in `Arc<ConvertState>` (rather than making `JitoClient`/
+  `JupiterClient` themselves `Clone`) purely so `AppState` stays cheaply
+  cloneable for Axum's `State` extractor.
+- The handler itself is a thin wrapper around the same `execute_swap`
+  the live trading engine and the `trade` CLI already use -- fetch a
+  quote, load the key, build/sign/submit via Jito with direct-RPC
+  fallback, report the outcome. No new execution path, just a new,
+  human-initiated caller of the existing one.
+- **No server-side confirmation gate on the endpoint itself** -- by
+  design, matching `POST /live/enable`'s precedent exactly: the
+  confirmation lives in the dashboard (typing the literal phrase
+  `CONVERT` before the button un-disables), not the API. Verified this
+  gate actually holds in a real browser: with the amount field empty and
+  no confirmation text entered, direct DOM inspection confirmed the
+  Convert button's `disabled` property is `true`. The button was **not**
+  clicked to actually convert anything during this verification --
+  proving the gate holds isn't the same as testing a real swap, and a
+  real swap remains the user's action alone, not this agent's, even to
+  prove a feature works.
+
+### Dashboard: Wallet page
+
+Four balance tiles (mainnet SOL, mainnet USDC, devnet SOL, lamports --
+the devnet tile only renders once that endpoint responds), the existing
+deposit-address/copy panel (with an added note that devnet and mainnet
+balances are separate ledgers on the same address), and a new Convert
+panel: direction selector, amount input, and the typed-`CONVERT`
+confirmation gate before the button enables. A result panel shows the
+method used and transaction signature(s) on success.
+
+### Verified
+
+`cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features
+-D warnings`, and `cargo test --workspace` all pass clean (4 new tests:
+two for `get_token_balance`'s sum/empty parsing, two already covered by
+existing failover tests extended to the new method). `tsc -b` clean.
+Live-verified against the real running server: `/api/v1/wallet` returned
+real mainnet SOL (0.0728) and USDC (25.02) balances, `/api/v1/wallet/devnet`
+returned the same address's real devnet balance (~10 SOL, leftover from
+Phase 10.3 faucet testing) -- confirming the token-balance parsing and
+the devnet/mainnet split both work against live data, not just fixtures.
+No conversion was executed by this agent.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started

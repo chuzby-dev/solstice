@@ -6,7 +6,9 @@ use crate::types::{
     EndpointHealth, RpcClientConfig, RpcEndpointConfig, TransactionConfirmation, TransactionStatus,
 };
 use chrono::Utc;
+use solana_account_decoder_client_types::UiAccountData;
 use solana_client::nonblocking::rpc_client::RpcClient as NonblockingRpcClient;
+use solana_client::rpc_request::TokenAccountsFilter;
 use solana_sdk::hash::Hash;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
@@ -15,7 +17,7 @@ use solana_transaction_status_client_types::TransactionConfirmationStatus as Sol
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 /// Solana RPC client with failover and connection pooling support.
 pub struct SolanaRpcClient {
@@ -290,6 +292,43 @@ impl SolanaRpcClient {
         ))
     }
 
+    /// Fetch an SPL token balance (raw, unscaled units) for `mint` held by
+    /// `owner`, trying each endpoint in priority order. Like
+    /// [`Self::get_balance`], a wallet with no token account for `mint`
+    /// returns `Ok(0)` rather than an error -- holding zero of a token is
+    /// a normal state. Sums across every matching token account in the
+    /// (rare) case an owner holds more than one for the same mint.
+    pub async fn get_token_balance(&self, owner: &Pubkey, mint: &Pubkey) -> BlockchainResult<u64> {
+        let max_attempts = self.config.max_retries.max(1);
+        let mut last_error: Option<String> = None;
+
+        for _ in 0..max_attempts {
+            let endpoint = self.get_active_endpoint()?;
+            let rpc = self.build_rpc_client(&endpoint);
+            let call_start = Instant::now();
+
+            match rpc
+                .get_token_accounts_by_owner(owner, TokenAccountsFilter::Mint(*mint))
+                .await
+            {
+                Ok(accounts) => {
+                    let latency_ms = call_start.elapsed().as_secs_f64() * 1000.0;
+                    self.record_success(&endpoint, latency_ms)?;
+                    return Ok(sum_parsed_token_balances(&accounts));
+                }
+                Err(e) => {
+                    let message = e.to_string();
+                    self.record_error(&endpoint, message.clone())?;
+                    last_error = Some(message);
+                }
+            }
+        }
+
+        Err(BlockchainError::RpcError(
+            last_error.unwrap_or_else(|| "all RPC attempts failed".to_string()),
+        ))
+    }
+
     /// Fetch a recent blockhash, trying each endpoint in priority order.
     pub async fn get_latest_blockhash(&self) -> BlockchainResult<Hash> {
         let max_attempts = self.config.max_retries.max(1);
@@ -425,6 +464,33 @@ impl SolanaRpcClient {
     }
 }
 
+/// Sum the SPL token balance out of a `getTokenAccountsByOwner` response
+/// (`jsonParsed` encoding, this RPC method's default). Any account whose
+/// data isn't the expected parsed shape contributes 0 rather than failing
+/// the whole call -- this is a best-effort balance display, not something
+/// that gates a real transaction.
+fn sum_parsed_token_balances(accounts: &[solana_client::rpc_response::RpcKeyedAccount]) -> u64 {
+    accounts
+        .iter()
+        .filter_map(|entry| {
+            let UiAccountData::Json(parsed) = &entry.account.data else {
+                warn!(
+                    "token account {} returned non-JSON data; treating balance as 0",
+                    entry.pubkey
+                );
+                return None;
+            };
+            let amount = parsed
+                .parsed
+                .get("info")?
+                .get("tokenAmount")?
+                .get("amount")?
+                .as_str()?;
+            amount.parse::<u64>().ok()
+        })
+        .sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -487,6 +553,55 @@ mod tests {
             SolanaRpcClient::with_endpoints(vec!["http://127.0.0.1:1".to_string()]).unwrap();
         let result = client.get_balance(&Pubkey::default()).await;
         assert!(matches!(result, Err(BlockchainError::RpcError(_))));
+    }
+
+    #[tokio::test]
+    async fn test_get_token_balance_fails_cleanly_when_unreachable() {
+        let client =
+            SolanaRpcClient::with_endpoints(vec!["http://127.0.0.1:1".to_string()]).unwrap();
+        let result = client
+            .get_token_balance(&Pubkey::default(), &Pubkey::default())
+            .await;
+        assert!(matches!(result, Err(BlockchainError::RpcError(_))));
+    }
+
+    #[test]
+    fn test_sum_parsed_token_balances_sums_matching_accounts() {
+        let make_entry = |amount: &str| {
+            let json = serde_json::json!({
+                "pubkey": "11111111111111111111111111111111",
+                "account": {
+                    "lamports": 2039280,
+                    "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                    "executable": false,
+                    "rentEpoch": 0,
+                    "data": {
+                        "program": "spl-token",
+                        "space": 165,
+                        "parsed": {
+                            "type": "account",
+                            "info": {
+                                "tokenAmount": {
+                                    "amount": amount,
+                                    "decimals": 6,
+                                    "uiAmount": 0.0,
+                                    "uiAmountString": "0"
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            serde_json::from_value::<solana_client::rpc_response::RpcKeyedAccount>(json).unwrap()
+        };
+
+        let accounts = vec![make_entry("1000000"), make_entry("500000")];
+        assert_eq!(sum_parsed_token_balances(&accounts), 1_500_000);
+    }
+
+    #[test]
+    fn test_sum_parsed_token_balances_empty_is_zero() {
+        assert_eq!(sum_parsed_token_balances(&[]), 0);
     }
 
     #[tokio::test]

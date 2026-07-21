@@ -30,14 +30,53 @@ pub struct StatusResponse {
     pub circuit_breaker_tripped: bool,
 }
 
-/// A wallet's public address and its current SOL balance. Read-only by
-/// design -- there is no field or endpoint here that can move funds; this
-/// server only reports what it can see.
+/// A wallet's public address and its current mainnet SOL + USDC balance.
 #[derive(Debug, Clone, Serialize)]
 pub struct WalletResponse {
     pub address: String,
     pub balance_lamports: u64,
     pub balance_sol: f64,
+    pub usdc_balance_raw: u64,
+    pub usdc_balance: f64,
+}
+
+/// The same wallet's balance on devnet -- a separate ledger from
+/// mainnet, but the same keypair, so it's meaningful to show both (e.g.
+/// leftover devnet SOL from earlier faucet-funded testing).
+#[derive(Debug, Clone, Serialize)]
+pub struct DevnetBalanceResponse {
+    pub address: String,
+    pub balance_lamports: u64,
+    pub balance_sol: f64,
+}
+
+/// Which way to convert in `POST /api/v1/wallet/convert`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConvertDirection {
+    SolToUsdc,
+    UsdcToSol,
+}
+
+/// Request body for `POST /api/v1/wallet/convert`. **Executes a real,
+/// irreversible on-chain swap** using the configured wallet's own funds
+/// when called -- this is not a preview endpoint. `amount` is in the
+/// input token's human units (SOL or USDC, not raw/lamports).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConvertRequest {
+    pub direction: ConvertDirection,
+    pub amount: f64,
+    /// Defaults to 150bps (1.5%) if omitted, matching the live engine's
+    /// default slippage tolerance.
+    pub slippage_bps: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConvertResponse {
+    pub method: String,
+    pub signatures: Vec<String>,
+    pub input_amount: f64,
+    pub output_amount: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]

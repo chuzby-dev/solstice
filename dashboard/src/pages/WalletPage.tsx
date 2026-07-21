@@ -2,16 +2,50 @@ import { useState } from 'react';
 import { api } from '../api/client';
 import { usePolling } from '../api/usePolling';
 import { StatTile } from '../components/StatTile';
+import type { ConvertDirection, ConvertResponse } from '../api/types';
+
+const CONVERT_CONFIRM_PHRASE = 'CONVERT';
 
 export function WalletPage() {
   const { data: wallet, error, loading } = usePolling(api.wallet, 10000);
+  const { data: devnet } = usePolling(api.walletDevnet, 15000);
   const [copied, setCopied] = useState(false);
+
+  const [direction, setDirection] = useState<ConvertDirection>('sol_to_usdc');
+  const [amountInput, setAmountInput] = useState('');
+  const [confirmText, setConfirmText] = useState('');
+  const [converting, setConverting] = useState(false);
+  const [convertError, setConvertError] = useState<string | null>(null);
+  const [convertResult, setConvertResult] = useState<ConvertResponse | null>(null);
 
   const copyAddress = async () => {
     if (!wallet) return;
     await navigator.clipboard.writeText(wallet.address);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
+  };
+
+  const handleConvert = async () => {
+    const amount = Number(amountInput);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setConvertError('Enter a valid positive amount.');
+      return;
+    }
+    if (confirmText !== CONVERT_CONFIRM_PHRASE) return;
+
+    setConverting(true);
+    setConvertError(null);
+    setConvertResult(null);
+    try {
+      const result = await api.walletConvert({ direction, amount });
+      setConvertResult(result);
+      setAmountInput('');
+      setConfirmText('');
+    } catch (err) {
+      setConvertError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setConverting(false);
+    }
   };
 
   return (
@@ -36,8 +70,12 @@ export function WalletPage() {
 
       {wallet && (
         <>
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <StatTile label="Balance" value={`${wallet.balance_sol.toFixed(4)} SOL`} />
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+            <StatTile label="SOL balance (mainnet)" value={`${wallet.balance_sol.toFixed(4)} SOL`} />
+            <StatTile label="USDC balance (mainnet)" value={`${wallet.usdc_balance.toFixed(2)} USDC`} />
+            {devnet && (
+              <StatTile label="SOL balance (devnet)" value={`${devnet.balance_sol.toFixed(4)} SOL`} />
+            )}
             <StatTile label="Lamports" value={wallet.balance_lamports.toLocaleString()} />
           </div>
 
@@ -58,10 +96,82 @@ export function WalletPage() {
               </button>
             </div>
             <p className="mt-3 text-xs text-[var(--text-muted)]">
-              This server can only read this wallet's balance — it has no endpoint that can
-              sign or send anything. Sending funds anywhere from this wallet requires the
-              private key file directly, on the machine it lives on.
+              The same address holds a separate balance on devnet and mainnet — they're
+              independent ledgers, shown separately above.
             </p>
+          </div>
+
+          <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-1)] p-4">
+            <div className="mb-3 text-sm font-medium text-[var(--text-secondary)]">
+              Convert SOL ⇄ USDC
+            </div>
+            <p className="mb-3 text-xs text-[var(--text-muted)]">
+              <strong className="text-[var(--status-warning)]">
+                Executes a real, irreversible on-chain swap
+              </strong>{' '}
+              using this wallet's own mainnet funds — there is no undo. Nothing happens
+              until you type the confirmation phrase and click Convert.
+            </p>
+
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center gap-2">
+                <select
+                  value={direction}
+                  onChange={(e) => setDirection(e.target.value as ConvertDirection)}
+                  className="rounded-md border border-[var(--border)] bg-[var(--page)] px-3 py-2 text-sm"
+                >
+                  <option value="sol_to_usdc">SOL → USDC</option>
+                  <option value="usdc_to_sol">USDC → SOL</option>
+                </select>
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={amountInput}
+                  onChange={(e) => setAmountInput(e.target.value)}
+                  placeholder={direction === 'sol_to_usdc' ? 'Amount in SOL' : 'Amount in USDC'}
+                  className="flex-1 rounded-md border border-[var(--border)] bg-[var(--page)] px-3 py-2 text-sm"
+                />
+              </div>
+
+              <label className="text-xs text-[var(--text-muted)]">
+                Type <code>{CONVERT_CONFIRM_PHRASE}</code> to confirm:
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={confirmText}
+                  onChange={(e) => setConfirmText(e.target.value)}
+                  placeholder={CONVERT_CONFIRM_PHRASE}
+                  className="flex-1 rounded-md border border-[var(--border)] bg-[var(--page)] px-3 py-2 text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={handleConvert}
+                  disabled={converting || amountInput === '' || confirmText !== CONVERT_CONFIRM_PHRASE}
+                  className="shrink-0 rounded-md bg-[var(--status-warning)] px-4 py-2 text-sm font-semibold text-black hover:opacity-90 disabled:opacity-40"
+                >
+                  {converting ? 'Converting…' : 'Convert'}
+                </button>
+              </div>
+            </div>
+
+            {convertError && (
+              <p className="mt-3 text-sm text-[var(--status-critical)]">{convertError}</p>
+            )}
+            {convertResult && (
+              <div className="mt-3 rounded-md border border-[var(--status-good)]/40 bg-[var(--status-good)]/10 p-3 text-sm">
+                <div className="text-[var(--status-good)]">
+                  Converted {convertResult.input_amount} → {convertResult.output_amount.toFixed(6)}{' '}
+                  ({convertResult.method})
+                </div>
+                {convertResult.signatures.map((sig) => (
+                  <div key={sig} className="mt-1 break-all text-xs text-[var(--text-muted)]">
+                    {sig}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </>
       )}

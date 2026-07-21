@@ -11,8 +11,10 @@
 //! WebSocket: ws://127.0.0.1:8080/api/v1/ws (paper), /api/v1/live/ws (live)
 
 use solana_sdk::pubkey::Pubkey;
-use solstice_api::{ApiServer, WalletState};
+use solstice_api::{ApiServer, ConvertState, WalletState};
 use solstice_blockchain::{SolanaRpcClient, WalletFile};
+use solstice_dex::JupiterClient;
+use solstice_execution::jito::{JitoClient, JitoConfig};
 use solstice_execution::{LiveTradedPair, LiveTradingConfig, LiveTradingEngine};
 use solstice_simulation::build_sol_usdc_demo_engine;
 use solstice_strategy::strategies::sma::SimpleMovingAverageStrategy;
@@ -75,6 +77,7 @@ async fn async_main() {
     // the moment it needs to sign a real transaction.
     let mut wallet = None;
     let mut live = None;
+    let mut convert = None;
 
     if let Ok(path) = std::env::var("WALLET_KEYPAIR_PATH") {
         let wallet_file = WalletFile::at(&path);
@@ -98,6 +101,30 @@ async fn async_main() {
 
                     let sol = Pubkey::from_str(SOL_MINT).expect("SOL_MINT is a valid pubkey");
                     let usdc = Pubkey::from_str(USDC_MINT).expect("USDC_MINT is a valid pubkey");
+
+                    match JitoClient::new(JitoConfig::default()) {
+                        Ok(jito) => match JupiterClient::new() {
+                            Ok(dex) => {
+                                convert = Some(Arc::new(ConvertState {
+                                    wallet_file: WalletFile::at(&path),
+                                    wallet_pubkey: pubkey,
+                                    rpc: rpc.clone(),
+                                    jito,
+                                    dex,
+                                    sol_mint: sol,
+                                    sol_decimals: 9,
+                                    usdc_mint: usdc,
+                                    usdc_decimals: 6,
+                                }));
+                            }
+                            Err(e) => {
+                                warn!("Failed to configure wallet conversion (Jupiter client): {e}")
+                            }
+                        },
+                        Err(e) => {
+                            warn!("Failed to configure wallet conversion (Jito client): {e}")
+                        }
+                    }
                     let pair = LiveTradedPair {
                         label: "SOL/USDC",
                         base_mint: sol,
@@ -149,7 +176,7 @@ async fn async_main() {
         .clone()
         .map(|live: Arc<LiveTradingEngine>| tokio::spawn(async move { live.run().await }));
 
-    let server = ApiServer::new(engine, addr, wallet, live);
+    let server = ApiServer::new(engine, addr, wallet, live, convert);
     let server_task = tokio::spawn(async move {
         if let Err(e) = server.start().await {
             tracing::error!("API server error: {}", e);

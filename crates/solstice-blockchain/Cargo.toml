@@ -20,6 +20,7 @@ chrono = { workspace = true }
 solana-sdk = { workspace = true }
 solana-client = { workspace = true }
 solana-transaction-status-client-types = "2.3"
+solana-account-decoder-client-types = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

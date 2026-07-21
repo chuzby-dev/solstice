@@ -1,16 +1,21 @@
 //! REST endpoint handlers.
 
 use crate::dto::{
-    LiveConfigRequest, PerformanceResponse, PositionsResponse, StatusResponse, TradeResponse,
-    TradesResponse, WalletResponse,
+    ConvertDirection, ConvertRequest, ConvertResponse, DevnetBalanceResponse, LiveConfigRequest,
+    PerformanceResponse, PositionsResponse, StatusResponse, TradeResponse, TradesResponse,
+    WalletResponse,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 use axum::extract::State;
 use axum::Json;
-use solstice_execution::LiveStatusSnapshot;
+use solstice_blockchain::SolanaRpcClient;
+use solstice_dex::{DexClient, QuoteRequest, SwapRequest};
+use solstice_execution::{execute_swap, LiveStatusSnapshot};
+use std::time::Duration;
 
 const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
+const DEVNET_RPC_URL: &str = "https://api.devnet.solana.com";
 
 pub async fn status(State(state): State<AppState>) -> Json<StatusResponse> {
     let snapshot = state.engine.portfolio_snapshot();
@@ -38,9 +43,9 @@ pub async fn trades(State(state): State<AppState>) -> Json<TradesResponse> {
     })
 }
 
-/// Read-only wallet status: address and current balance. `404` if no
-/// wallet is configured for this server (`WALLET_KEYPAIR_PATH` unset).
-/// There is deliberately no corresponding write/send endpoint here.
+/// Read-only wallet status: address, mainnet SOL balance, and mainnet
+/// USDC balance. `404` if no wallet is configured for this server
+/// (`WALLET_KEYPAIR_PATH` unset).
 pub async fn wallet(State(state): State<AppState>) -> ApiResult<Json<WalletResponse>> {
     let wallet = state
         .wallet
@@ -53,10 +58,142 @@ pub async fn wallet(State(state): State<AppState>) -> ApiResult<Json<WalletRespo
         .await
         .map_err(|e| ApiError::Upstream(format!("failed to fetch wallet balance: {e}")))?;
 
+    // USDC balance is best-effort: a wallet with no USDC token account
+    // yet is a normal state (reports 0), same philosophy as
+    // `get_balance` for a never-funded SOL address.
+    let usdc_mint = usdc_mint();
+    let usdc_balance_raw = wallet
+        .rpc
+        .get_token_balance(&wallet.pubkey, &usdc_mint)
+        .await
+        .map_err(|e| ApiError::Upstream(format!("failed to fetch USDC balance: {e}")))?;
+
     Ok(Json(WalletResponse {
         address: wallet.pubkey.to_string(),
         balance_lamports,
         balance_sol: balance_lamports as f64 / LAMPORTS_PER_SOL,
+        usdc_balance_raw,
+        usdc_balance: usdc_balance_raw as f64 / 10f64.powi(USDC_DECIMALS as i32),
+    }))
+}
+
+/// Read-only devnet SOL balance for the same wallet address. Devnet is a
+/// separate ledger from mainnet, but the same keypair holds an address on
+/// both -- useful for seeing leftover devnet SOL from earlier
+/// faucet-funded testing. `404` if no wallet is configured.
+pub async fn wallet_devnet(
+    State(state): State<AppState>,
+) -> ApiResult<Json<DevnetBalanceResponse>> {
+    let wallet = state
+        .wallet
+        .as_ref()
+        .ok_or_else(|| ApiError::NotFound("no wallet configured".to_string()))?;
+
+    let devnet_rpc = SolanaRpcClient::with_endpoints(vec![DEVNET_RPC_URL.to_string()])
+        .map_err(|e| ApiError::Upstream(format!("failed to build devnet RPC client: {e}")))?;
+    let balance_lamports = devnet_rpc
+        .get_balance(&wallet.pubkey)
+        .await
+        .map_err(|e| ApiError::Upstream(format!("failed to fetch devnet balance: {e}")))?;
+
+    Ok(Json(DevnetBalanceResponse {
+        address: wallet.pubkey.to_string(),
+        balance_lamports,
+        balance_sol: balance_lamports as f64 / LAMPORTS_PER_SOL,
+    }))
+}
+
+const USDC_DECIMALS: u8 = 6;
+
+fn usdc_mint() -> solana_sdk::pubkey::Pubkey {
+    use std::str::FromStr;
+    solana_sdk::pubkey::Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+        .expect("USDC mint is a valid pubkey")
+}
+
+/// **Executes a real, irreversible on-chain swap** converting between the
+/// configured wallet's own SOL and USDC, in whichever direction the
+/// caller requests. This is not a preview endpoint and there is no
+/// separate confirmation step here -- the dashboard's Wallet page gates
+/// this behind its own typed confirmation before ever calling it, the
+/// same "a typo should abort, not confirm" pattern as the live trading
+/// kill switch and the `trade` CLI's `SEND` gate. `404` if no wallet is
+/// configured.
+pub async fn wallet_convert(
+    State(state): State<AppState>,
+    Json(body): Json<ConvertRequest>,
+) -> ApiResult<Json<ConvertResponse>> {
+    let convert = state
+        .convert
+        .as_ref()
+        .ok_or_else(|| ApiError::NotFound("no wallet configured".to_string()))?;
+
+    if !body.amount.is_finite() || body.amount <= 0.0 {
+        return Err(ApiError::BadRequest(
+            "amount must be a positive finite number".to_string(),
+        ));
+    }
+    let slippage_bps = body.slippage_bps.unwrap_or(150);
+
+    let (input_mint, input_decimals, output_mint) = match body.direction {
+        ConvertDirection::SolToUsdc => (convert.sol_mint, convert.sol_decimals, convert.usdc_mint),
+        ConvertDirection::UsdcToSol => (convert.usdc_mint, convert.usdc_decimals, convert.sol_mint),
+    };
+    let amount_raw = (body.amount * 10f64.powi(input_decimals as i32)).round() as u64;
+    if amount_raw == 0 {
+        return Err(ApiError::BadRequest(
+            "amount is too small to convert to a nonzero raw token amount".to_string(),
+        ));
+    }
+
+    let swap = SwapRequest {
+        input_mint,
+        output_mint,
+        amount: amount_raw,
+        payer: convert.wallet_pubkey,
+        slippage_bps,
+    };
+
+    let quote = convert
+        .dex
+        .get_quote(&QuoteRequest::new(
+            input_mint,
+            output_mint,
+            amount_raw,
+            slippage_bps,
+        ))
+        .await
+        .map_err(|e| ApiError::Upstream(format!("failed to fetch conversion quote: {e}")))?;
+
+    let keypair = convert
+        .wallet_file
+        .load_keypair()
+        .map_err(|e| ApiError::Upstream(format!("failed to load wallet key: {e}")))?;
+
+    let outcome = execute_swap(
+        &convert.jito,
+        &convert.rpc,
+        &convert.dex,
+        &swap,
+        &quote,
+        &keypair,
+        None,
+        Duration::from_secs(60),
+        Duration::from_secs(2),
+    )
+    .await
+    .map_err(|e| ApiError::Upstream(format!("conversion failed: {e}")))?;
+
+    let output_decimals = match body.direction {
+        ConvertDirection::SolToUsdc => convert.usdc_decimals,
+        ConvertDirection::UsdcToSol => convert.sol_decimals,
+    };
+
+    Ok(Json(ConvertResponse {
+        method: format!("{:?}", outcome.method),
+        signatures: outcome.signatures.iter().map(|s| s.to_string()).collect(),
+        input_amount: body.amount,
+        output_amount: quote.out_amount as f64 / 10f64.powi(output_decimals as i32),
     }))
 }
 

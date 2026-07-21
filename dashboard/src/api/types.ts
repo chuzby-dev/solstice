@@ -7,6 +7,29 @@ export interface WalletResponse {
   address: string;
   balance_lamports: number;
   balance_sol: number;
+  usdc_balance_raw: number;
+  usdc_balance: number;
+}
+
+export interface DevnetBalanceResponse {
+  address: string;
+  balance_lamports: number;
+  balance_sol: number;
+}
+
+export type ConvertDirection = 'sol_to_usdc' | 'usdc_to_sol';
+
+export interface ConvertRequest {
+  direction: ConvertDirection;
+  amount: number;
+  slippage_bps?: number;
+}
+
+export interface ConvertResponse {
+  method: string;
+  signatures: string[];
+  input_amount: number;
+  output_amount: number;
 }
 
 export interface StatusResponse {

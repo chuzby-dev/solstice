@@ -1,6 +1,6 @@
 //! Axum HTTP/WebSocket server wiring.
 
-use crate::state::{AppState, WalletState};
+use crate::state::{AppState, ConvertState, WalletState};
 use crate::{handlers, websocket};
 use axum::routing::{get, post};
 use axum::Router;
@@ -23,8 +23,9 @@ impl ApiServer {
         addr: SocketAddr,
         wallet: Option<WalletState>,
         live: Option<Arc<LiveTradingEngine>>,
+        convert: Option<Arc<ConvertState>>,
     ) -> Self {
-        let state = AppState::new(engine, wallet, live);
+        let state = AppState::new(engine, wallet, live, convert);
 
         let router = Router::new()
             .route("/api/v1/status", get(handlers::status))
@@ -32,6 +33,8 @@ impl ApiServer {
             .route("/api/v1/trades", get(handlers::trades))
             .route("/api/v1/performance", get(handlers::performance))
             .route("/api/v1/wallet", get(handlers::wallet))
+            .route("/api/v1/wallet/devnet", get(handlers::wallet_devnet))
+            .route("/api/v1/wallet/convert", post(handlers::wallet_convert))
             .route("/api/v1/ws", get(websocket::ws_handler))
             .route("/api/v1/live/status", get(handlers::live_status))
             .route("/api/v1/live/enable", post(handlers::live_enable))
