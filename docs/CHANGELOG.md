@@ -6,6 +6,42 @@
 
 ---
 
+## [0.1.0-alpha] - 2026-07-21 (0.5% default spread + toggle-switch arm controls)
+
+### Changes
+
+Two user-requested changes, made together since the first only became
+safe because of the second (per the prior slippage-decoupling entry):
+
+1. `cross_dex_min_spread` default lowered from `0.015` (1.5%) to `0.005`
+   (0.5%), matching the user's read on realistic cross-DEX spreads. Only
+   reasonable now that `cross_dex_max_slippage_bps` (0.3%/leg) is
+   decoupled from the general trading slippage -- doing this without that
+   prior change would have let per-leg slippage tolerance alone exceed
+   the entire edge.
+2. Replaced the typed-confirmation gates (`ENABLE LIVE TRADING`,
+   `ENABLE CROSS-DEX ARB`) on the dashboard with plain toggle switches for
+   both the main kill switch and the cross-DEX arb arm control. New
+   reusable `ToggleSwitch` component (`dashboard/src/components/ToggleSwitch.tsx`).
+   The typed-phrase requirement was a UI affordance only, not a backend
+   safety check -- the backend gates (risk limits, position caps,
+   `cross_dex_arb_enabled` defaulting `false`, the kill switch itself)
+   are unchanged and still the actual protection.
+
+### Verified
+
+`cargo fmt --all`, `cargo clippy --workspace --lib --bins --tests
+--all-features -D warnings`, `cargo test --workspace` all pass clean.
+`npx tsc --noEmit` in `dashboard/` passes clean. Verified live in the
+browser against the (still pre-restart) running API: toggled the
+cross-DEX arb switch off, confirmed the API call landed and a
+`CrossDexArbEnabledChanged`/"Cross-DEX arbitrage disarmed" event streamed
+into the live activity feed in real time. Did not toggle the live-trading
+kill switch itself during verification -- that's a real-funds action left
+to the user.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-21 (Decouple cross-DEX arb slippage from general trading slippage)
 
 ### Problem

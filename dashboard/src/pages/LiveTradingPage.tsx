@@ -3,10 +3,8 @@ import { api } from '../api/client';
 import { usePolling } from '../api/usePolling';
 import { useLiveEvents } from '../api/useLiveEvents';
 import { StatTile, formatUsd } from '../components/StatTile';
+import { ToggleSwitch } from '../components/ToggleSwitch';
 import type { LiveEvent } from '../api/types';
-
-const CONFIRM_PHRASE = 'ENABLE LIVE TRADING';
-const ARB_CONFIRM_PHRASE = 'ENABLE CROSS-DEX ARB';
 
 function describeLiveEvent(event: LiveEvent): { text: string; tone: 'neutral' | 'good' | 'warning' | 'critical' } {
   switch (event.type) {
@@ -102,8 +100,6 @@ export function LiveTradingPage() {
   const [takeProfitInput, setTakeProfitInput] = useState('');
   const [crossDexSpreadInput, setCrossDexSpreadInput] = useState('');
   const [crossDexSlippageInput, setCrossDexSlippageInput] = useState('');
-  const [arbConfirmText, setArbConfirmText] = useState('');
-  const [confirmText, setConfirmText] = useState('');
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -197,13 +193,11 @@ export function LiveTradingPage() {
     }
   };
 
-  const handleArmCrossDexArb = async () => {
-    if (arbConfirmText !== ARB_CONFIRM_PHRASE) return;
+  const handleToggleCrossDexArb = async (armed: boolean) => {
     setBusy(true);
     setActionError(null);
     try {
-      await api.liveSetCrossDexArbEnabled(true);
-      setArbConfirmText('');
+      await api.liveSetCrossDexArbEnabled(armed);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -211,37 +205,15 @@ export function LiveTradingPage() {
     }
   };
 
-  const handleDisarmCrossDexArb = async () => {
+  const handleToggleLiveTrading = async (enabled: boolean) => {
     setBusy(true);
     setActionError(null);
     try {
-      await api.liveSetCrossDexArbEnabled(false);
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleEnable = async () => {
-    if (confirmText !== CONFIRM_PHRASE) return;
-    setBusy(true);
-    setActionError(null);
-    try {
-      await api.liveEnable();
-      setConfirmText('');
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleDisable = async () => {
-    setBusy(true);
-    setActionError(null);
-    try {
-      await api.liveDisable();
+      if (enabled) {
+        await api.liveEnable();
+      } else {
+        await api.liveDisable();
+      }
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -305,40 +277,13 @@ export function LiveTradingPage() {
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             {/* Kill switch */}
             <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-1)] p-4">
-              <div className="mb-3 text-sm font-medium text-[var(--text-secondary)]">
-                Kill switch
-              </div>
-              {status.enabled ? (
-                <button
-                  type="button"
-                  onClick={handleDisable}
-                  disabled={busy}
-                  className="w-full rounded-md bg-[var(--status-critical)] px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
-                >
-                  Disable live trading now
-                </button>
-              ) : (
-                <div className="flex flex-col gap-2">
-                  <label className="text-xs text-[var(--text-muted)]">
-                    Type <code>{CONFIRM_PHRASE}</code> to arm live trading:
-                  </label>
-                  <input
-                    type="text"
-                    value={confirmText}
-                    onChange={(e) => setConfirmText(e.target.value)}
-                    placeholder={CONFIRM_PHRASE}
-                    className="rounded-md border border-[var(--border)] bg-[var(--page)] px-3 py-2 text-sm"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleEnable}
-                    disabled={busy || confirmText !== CONFIRM_PHRASE}
-                    className="w-full rounded-md bg-[var(--status-warning)] px-4 py-2 text-sm font-semibold text-black hover:opacity-90 disabled:opacity-40"
-                  >
-                    Enable live trading
-                  </button>
-                </div>
-              )}
+              <ToggleSwitch
+                label={status.enabled ? 'Live trading is ON — real trades will execute' : 'Live trading is off'}
+                checked={status.enabled}
+                onChange={handleToggleLiveTrading}
+                disabled={busy}
+                activeColor="critical"
+              />
             </div>
 
             {/* Capital cap */}
@@ -495,40 +440,13 @@ export function LiveTradingPage() {
 
             {/* Cross-DEX arbitrage arm switch */}
             <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-1)] p-4">
-              <div className="mb-3 text-sm font-medium text-[var(--text-secondary)]">
-                Cross-DEX arbitrage executor
-              </div>
-              {status.cross_dex_arb_enabled ? (
-                <button
-                  type="button"
-                  onClick={handleDisarmCrossDexArb}
-                  disabled={busy}
-                  className="w-full rounded-md bg-[var(--status-critical)] px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
-                >
-                  Disarm cross-DEX arbitrage
-                </button>
-              ) : (
-                <div className="flex flex-col gap-2">
-                  <label className="text-xs text-[var(--text-muted)]">
-                    Type <code>{ARB_CONFIRM_PHRASE}</code> to arm:
-                  </label>
-                  <input
-                    type="text"
-                    value={arbConfirmText}
-                    onChange={(e) => setArbConfirmText(e.target.value)}
-                    placeholder={ARB_CONFIRM_PHRASE}
-                    className="rounded-md border border-[var(--border)] bg-[var(--page)] px-3 py-2 text-sm"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleArmCrossDexArb}
-                    disabled={busy || arbConfirmText !== ARB_CONFIRM_PHRASE}
-                    className="w-full rounded-md bg-[var(--status-warning)] px-4 py-2 text-sm font-semibold text-black hover:opacity-90 disabled:opacity-40"
-                  >
-                    Arm cross-DEX arbitrage
-                  </button>
-                </div>
-              )}
+              <ToggleSwitch
+                label={status.cross_dex_arb_enabled ? 'Cross-DEX arbitrage is ARMED' : 'Cross-DEX arbitrage is disarmed'}
+                checked={status.cross_dex_arb_enabled}
+                onChange={handleToggleCrossDexArb}
+                disabled={busy}
+                activeColor="warning"
+              />
               <p className="mt-2 text-xs text-[var(--text-muted)]">
                 Buys on whichever registered DEX quotes cheapest and immediately sells on
                 whichever quotes priciest. <strong>Not atomic</strong> -- two separate

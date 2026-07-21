@@ -73,14 +73,17 @@ pub struct LiveTradingConfig {
     /// Adjustable at runtime via
     /// `LiveTradingEngine::set_cross_dex_arb_enabled`.
     pub cross_dex_arb_enabled: bool,
-    /// Minimum spread (e.g. `0.015` = 1.5%) between the cheapest and
+    /// Minimum spread (e.g. `0.005` = 0.5%) between the cheapest and
     /// priciest quoted price for a pair, across every registered DEX,
     /// required to attempt a cross-DEX arbitrage trade. Set well above a
     /// single swap's round-trip cost: two separate swaps each pay their
     /// own fees and slippage tolerance (unlike a single-DEX trade), so
     /// this needs more headroom than `SpreadArbitrageStrategy`'s
     /// much-smaller `min_spread_bps` (which only ever bets directionally
-    /// on one leg, not two). Adjustable at runtime via
+    /// on one leg, not two). Paired with `cross_dex_max_slippage_bps`
+    /// (default 0.3%/leg, ~0.6% round-trip) below -- a 0.5% threshold is
+    /// only safe because that per-leg tolerance was tightened alongside
+    /// it. Adjustable at runtime via
     /// `LiveTradingEngine::set_cross_dex_min_spread`.
     pub cross_dex_min_spread: f64,
     /// Slippage tolerance applied to each leg of a cross-DEX arbitrage
@@ -148,7 +151,7 @@ impl Default for LiveTradingConfig {
             stop_loss_percent: 0.1,
             take_profit_percent: 0.05,
             cross_dex_arb_enabled: false,
-            cross_dex_min_spread: 0.015,
+            cross_dex_min_spread: 0.005,
             cross_dex_max_slippage_bps: 30,
             slippage_bps: 150,
             poll_interval: Duration::from_secs(15),
