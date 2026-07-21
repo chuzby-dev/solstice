@@ -17,7 +17,7 @@ pub use error::{DexError, DexResult};
 pub use jupiter::JupiterClient;
 pub use orca::OrcaClient;
 pub use raydium::RaydiumClient;
-pub use traits::DexClient;
+pub use traits::{DexClient, SwapInstructions};
 pub use types::{Liquidity, PriceUpdate, Quote, QuoteRequest, RouteSegment, SwapPlan, SwapRequest};
 
 #[cfg(test)]

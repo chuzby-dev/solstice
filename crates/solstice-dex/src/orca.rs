@@ -19,7 +19,7 @@
 //! than guessing — consistent with the same call made for Raydium.
 
 use crate::error::{DexError, DexResult};
-use crate::traits::DexClient;
+use crate::traits::{DexClient, SwapInstructions};
 use crate::types::{Liquidity, PriceUpdate, Quote, QuoteRequest, RouteSegment, SwapRequest};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -28,7 +28,6 @@ use orca_whirlpools_core::{
     get_tick_array_start_tick_index, swap_quote_by_input_token, TickArrayFacade, TickArrays,
     TICK_ARRAY_SIZE,
 };
-use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use solstice_blockchain::SolanaRpcClient;
 use std::collections::HashMap;
@@ -287,7 +286,7 @@ impl DexClient for OrcaClient {
         &self,
         _swap: &SwapRequest,
         _quote: &Quote,
-    ) -> DexResult<Vec<Instruction>> {
+    ) -> DexResult<SwapInstructions> {
         Err(DexError::InvalidPoolState(
             "Orca swap instruction building requires a verified tick-array ordering convention \
              for the on-chain SwapV2 instruction that this integration does not confirm — see \

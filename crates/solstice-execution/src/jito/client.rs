@@ -15,7 +15,7 @@ use super::error::{JitoError, JitoResult};
 use base64::Engine as _;
 use serde_json::{json, Value};
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::transaction::Transaction;
+use solana_sdk::transaction::VersionedTransaction;
 use std::str::FromStr;
 use std::time::Duration;
 use tracing::warn;
@@ -150,13 +150,13 @@ fn build_rpc_request(method: &str, params: Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })
 }
 
-fn encode_transaction(transaction: &Transaction) -> JitoResult<String> {
+fn encode_transaction(transaction: &VersionedTransaction) -> JitoResult<String> {
     let bytes =
         bincode::serialize(transaction).map_err(|e| JitoError::Serialization(e.to_string()))?;
     Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
-fn build_send_bundle_request(transactions: &[Transaction]) -> JitoResult<Value> {
+fn build_send_bundle_request(transactions: &[VersionedTransaction]) -> JitoResult<Value> {
     let encoded = transactions
         .iter()
         .map(encode_transaction)
@@ -255,9 +255,10 @@ fn parse_bundle_status_response(value: &Value, bundle_id: &str) -> JitoResult<Bu
 mod tests {
     use super::*;
     use solana_sdk::message::Message;
+    use solana_sdk::transaction::Transaction;
 
-    fn dummy_transaction() -> Transaction {
-        Transaction::new_unsigned(Message::default())
+    fn dummy_transaction() -> VersionedTransaction {
+        VersionedTransaction::from(Transaction::new_unsigned(Message::default()))
     }
 
     #[test]

@@ -202,9 +202,9 @@ impl Default for DexAggregator {
 mod tests {
     use super::*;
     use crate::error::DexResult as Result;
+    use crate::traits::SwapInstructions;
     use crate::types::{Liquidity, PriceUpdate, RouteSegment, SwapRequest};
     use async_trait::async_trait;
-    use solana_sdk::instruction::Instruction;
     use solana_sdk::pubkey::Pubkey;
     use tokio::sync::mpsc;
 
@@ -247,8 +247,8 @@ mod tests {
             &self,
             _swap: &SwapRequest,
             _quote: &Quote,
-        ) -> Result<Vec<Instruction>> {
-            Ok(vec![])
+        ) -> Result<SwapInstructions> {
+            Ok(SwapInstructions::default())
         }
 
         async fn subscribe_prices(&self, _markets: &[Pubkey]) -> mpsc::Receiver<PriceUpdate> {

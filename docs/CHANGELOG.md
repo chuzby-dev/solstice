@@ -1182,6 +1182,111 @@ disabled-mode safety invariant). Dashboard `tsc -b && vite build` clean.
 
 ---
 
+## [0.1.0-alpha] - 2026-07-21 (Fix: real-trade failures from the first live run)
+
+The user armed live trading with real capital and it failed twice in a row
+with `FAILED SMA` events, pasting the actual dashboard activity feed
+(WebSocket inspection was declined -- see below) since a Chrome Remote
+Desktop / Android session made copying terminal output impractical. Both
+failures were confirmed via direct Helius RPC (`getBalance`,
+`getSignaturesForAddress`) to have happened *before* broadcast --
+simulation/local-size rejection, not a landed-but-reverted transaction --
+so no fees were lost either time. Diagnosed and fixed three separate
+issues:
+
+### Fix 1: mislabeled error hid the real failure mode
+
+`jito::fallback::submit_with_fallback`'s direct-RPC fallback wrapped every
+failure as `JitoError::Http(...)`, so a plain RPC rejection displayed as
+"HTTP request to Jito Block Engine failed" -- actively misleading, since
+the failure had nothing to do with Jito. Added
+`JitoError::DirectSubmissionFailed(String)` and used it at that call site
+instead.
+
+### Fix 2: address lookup tables -- the actual blocker
+
+The real cause of both failures: `build_swap_transaction` could only
+assemble a legacy `Transaction`, and Solana's legacy format caps out at
+1232 bytes. The user's SOL/USDC route needed 2-3 address lookup tables
+(Jupiter's `/swap-instructions` response said so explicitly --
+`address_lookup_table_addresses`, previously parsed and then discarded
+after only logging a `warn!`). A route that needs ALTs literally cannot
+fit in a legacy transaction, so every attempt against that route was
+guaranteed to fail regardless of price or slippage.
+
+Built full `VersionedTransaction` support:
+- `solstice_dex::DexClient::build_swap_instructions` now returns a new
+  `SwapInstructions { instructions, address_lookup_tables }` instead of a
+  bare `Vec<Instruction>`, so the ALT addresses Jupiter already returns
+  are surfaced to the caller instead of thrown away. `JupiterClient`
+  parses them into `Pubkey`s; Orca/Raydium (which already refuse to build
+  instructions at all -- see their module docs) just carry the new return
+  type.
+- `solstice_execution::build_swap_transaction` now takes
+  `rpc: &SolanaRpcClient`, fetches each referenced ALT account
+  (`rpc.get_account` + `AddressLookupTable::deserialize`), and compiles a
+  `v0::Message` via `v0::Message::try_compile` when any ALTs are present
+  (falling back to a bare legacy-shaped message with none when a route
+  needs none). Returns `VersionedTransaction` uniformly either way.
+- That type change propagated through the whole submission path:
+  `jito::Bundle` now holds `Vec<VersionedTransaction>`,
+  `jito::submit_with_fallback`/`try_jito` take
+  `&[VersionedTransaction]`/`Option<VersionedTransaction>`, and
+  `SolanaRpcClient::send_transaction` takes `&VersionedTransaction`
+  (`solana_client`'s underlying `send_transaction` is already generic over
+  `SerializableTransaction`, so no changes needed there). Remaining
+  legacy-`Transaction` producers (the Jito tip transaction, the
+  `devnet_dry_run` example, the plain sign/submit/confirm pipeline test)
+  convert via `VersionedTransaction::from(legacy_tx)`.
+- Finding the right API took reading the vendored crate source directly
+  rather than guessing: `AddressLookupTableAccount` isn't in
+  `solana-address-lookup-table-interface` (where it would seem to belong)
+  -- it's defined in `solana-message` itself and re-exported as
+  `solana_sdk::message::AddressLookupTableAccount`, while the *state*
+  type used to deserialize a fetched account (`AddressLookupTable`) comes
+  from `solana_sdk::address_lookup_table::state`. Consistent with this
+  session's standing rule for money-moving code: verify against the real
+  crate source, don't assume a plausible-sounding path.
+
+### Fix 3: stale quote + tight slippage on top of everything else
+
+Even once a route fits on-chain, the observed revert
+(`JUP6Lk...` program error `0x1788` inside a `Route` instruction -- exact
+meaning not independently confirmed against Jupiter's IDL, flagged as
+such at the time) is consistent with the quote going stale between being
+read and being submitted, combined with a tight 50bps slippage tolerance.
+`execute_planned_trade` used to: fetch a quote, load the wallet keypair,
+fetch Jito tip accounts over the network, *then* call `execute_swap`
+(which fetches its own fresh quote again inside
+`JupiterClient::build_swap_instructions`, since Jupiter's
+`/swap-instructions` needs the exact quote body) -- three sequential
+round trips between reading a price and trading against it.
+- Reordered to load the keypair and resolve the tip account *before*
+  fetching the quote that actually gets traded against, shrinking that
+  window.
+- Added a 5-minute tip-account cache (`cached_tip_accounts`) instead of
+  querying Jito on every single trade attempt -- tip accounts don't
+  rotate meaningfully faster than that, so this removes a full network
+  round trip from the hot path for free.
+- Raised `LiveTradingConfig::default().slippage_bps` from 50 to 150
+  (0.5% → 1.5%) -- still tight for the small trade sizes ($15-50) this
+  engine targets, but enough room to absorb normal price movement across
+  the unavoidable re-quote inside `build_swap_instructions`.
+
+### Verified
+
+`cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features
+-D warnings`, and `cargo test --workspace` all pass clean (the `solstice-api`
+crate's `serve` binary was excluded from the build/clippy passes purely
+because the user's live server was running against it at the time and
+holding the file lock -- its `--lib --tests` target was checked/tested
+separately and is unaffected). No live trade was attempted by this agent
+-- verification was via RPC read calls and the existing test suite;
+placing a real order remains the user's action alone. The running server
+needs a restart to pick these fixes up.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started

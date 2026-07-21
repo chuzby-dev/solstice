@@ -10,7 +10,7 @@ use solana_client::nonblocking::rpc_client::RpcClient as NonblockingRpcClient;
 use solana_sdk::hash::Hash;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
-use solana_sdk::transaction::Transaction;
+use solana_sdk::transaction::VersionedTransaction;
 use solana_transaction_status_client_types::TransactionConfirmationStatus as SolanaConfirmationStatus;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -323,7 +323,10 @@ impl SolanaRpcClient {
     /// until one accepts it or all fail. This only submits the transaction
     /// — it does not wait for confirmation; callers that need that should
     /// follow up with [`Self::confirm_transaction`].
-    pub async fn send_transaction(&self, transaction: &Transaction) -> BlockchainResult<Signature> {
+    pub async fn send_transaction(
+        &self,
+        transaction: &VersionedTransaction,
+    ) -> BlockchainResult<Signature> {
         let max_attempts = self.config.max_retries.max(1);
         let mut last_error: Option<String> = None;
 
@@ -425,6 +428,7 @@ impl SolanaRpcClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solana_sdk::transaction::Transaction;
 
     #[tokio::test]
     async fn test_get_multiple_accounts_empty_input() {
@@ -504,7 +508,9 @@ mod tests {
     async fn test_send_transaction_fails_cleanly_when_unreachable() {
         let client =
             SolanaRpcClient::with_endpoints(vec!["http://127.0.0.1:1".to_string()]).unwrap();
-        let transaction = Transaction::new_unsigned(solana_sdk::message::Message::default());
+        let transaction = VersionedTransaction::from(Transaction::new_unsigned(
+            solana_sdk::message::Message::default(),
+        ));
         let result = client.send_transaction(&transaction).await;
         assert!(matches!(result, Err(BlockchainError::TransactionFailed(_))));
     }
@@ -597,6 +603,7 @@ mod tests {
             .add_instruction(instruction)
             .build_and_sign(blockhash.to_bytes(), &[&payer])
             .unwrap();
+        let transaction = VersionedTransaction::from(transaction);
 
         let signature = client.send_transaction(&transaction).await.unwrap();
 

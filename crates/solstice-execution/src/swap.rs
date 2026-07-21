@@ -3,9 +3,10 @@
 //!
 //! `solstice_dex::DexClient::build_swap_instructions` (implemented for
 //! real by `JupiterClient`, against Jupiter's live `/swap-instructions`
-//! API) returns raw `Instruction`s, but nothing previously turned those
-//! into an actual `Transaction` ready to sign and submit. This module is
-//! that missing link — paired with `solstice_blockchain::SolanaRpcClient`'s
+//! API) returns raw instructions plus any address lookup tables (ALTs) the
+//! route needs, but nothing previously turned those into an actual
+//! transaction ready to sign and submit. This module is that missing link
+//! — paired with `solstice_blockchain::SolanaRpcClient`'s
 //! `send_transaction`/`confirm_transaction` and
 //! `solstice_execution::jito`'s bundle submission, it completes the chain
 //! from "here are the instructions" to "here's what happened on-chain."
@@ -17,11 +18,13 @@
 
 use crate::error::{ExecutionError, ExecutionResult};
 use crate::jito::{build_tip_instruction, submit_with_fallback, JitoClient, SubmissionOutcome};
+use solana_sdk::address_lookup_table::state::AddressLookupTable;
 use solana_sdk::hash::Hash;
+use solana_sdk::message::{v0, AddressLookupTableAccount, VersionedMessage};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
-use solana_sdk::transaction::Transaction;
+use solana_sdk::transaction::VersionedTransaction;
 use solstice_blockchain::transaction::TransactionBuilder;
 use solstice_blockchain::SolanaRpcClient;
 use solstice_dex::{DexClient, Quote, SwapRequest};
@@ -30,9 +33,43 @@ use std::time::Duration;
 /// Solana's maximum transaction size (legacy or versioned), in bytes.
 pub const MAX_TRANSACTION_SIZE: usize = 1232;
 
-/// Fetch swap instructions from `dex` for `swap`/`quote`, assemble them
-/// into a legacy `Transaction` against `recent_blockhash`, and sign it
-/// with `payer`.
+/// Fetch `table` from `rpc` and deserialize it into the form
+/// `v0::Message::try_compile` needs.
+async fn fetch_lookup_table_account(
+    rpc: &SolanaRpcClient,
+    table: Pubkey,
+) -> ExecutionResult<AddressLookupTableAccount> {
+    let account = rpc.get_account(&table).await.map_err(|e| {
+        ExecutionError::TransactionBuildFailed(format!(
+            "failed to fetch address lookup table {table}: {e}"
+        ))
+    })?;
+    let data = account.data.ok_or_else(|| {
+        ExecutionError::TransactionBuildFailed(format!(
+            "address lookup table {table} has no account data"
+        ))
+    })?;
+    let parsed = AddressLookupTable::deserialize(&data).map_err(|e| {
+        ExecutionError::TransactionBuildFailed(format!(
+            "failed to deserialize address lookup table {table}: {e}"
+        ))
+    })?;
+    Ok(AddressLookupTableAccount {
+        key: table,
+        addresses: parsed.addresses.into_owned(),
+    })
+}
+
+/// Fetch swap instructions from `dex` for `swap`/`quote` and assemble them
+/// into a signed transaction against `recent_blockhash`, signed with
+/// `payer`.
+///
+/// If the route needs no address lookup tables, this builds a legacy
+/// message (wrapped as a `VersionedTransaction` for a uniform return type
+/// down the submission pipeline). If it does, `rpc` is used to fetch and
+/// deserialize each table so a versioned `v0` message can be compiled
+/// against them — this is what lets routes that don't fit in the legacy
+/// 1232-byte limit actually submit, instead of being rejected outright.
 ///
 /// Takes a concrete `&Keypair` rather than `&dyn Signer`, deliberately:
 /// `dyn Signer` isn't `Sync`, and holding a `&dyn Signer` across this
@@ -40,32 +77,42 @@ pub const MAX_TRANSACTION_SIZE: usize = 1232;
 /// resulting future `!Send` -- which breaks `tokio::spawn`ing anything
 /// that calls this (as `LiveTradingEngine::run` does). A concrete
 /// `Keypair` is `Send + Sync`, so this has no such problem.
-///
-/// This deliberately does not build a `VersionedTransaction` with address
-/// lookup tables: `DexClient::build_swap_instructions`'s return type
-/// (`Vec<Instruction>`) doesn't carry whether a route needs them, so
-/// rather than silently assembling something that might not fit on-chain,
-/// this checks the assembled transaction's real serialized size and
-/// returns `TransactionBuildFailed` if it exceeds the network limit. A
-/// caller that hits this needs ALT support, which isn't built here yet.
 pub async fn build_swap_transaction(
     dex: &dyn DexClient,
+    rpc: &SolanaRpcClient,
     swap: &SwapRequest,
     quote: &Quote,
     recent_blockhash: Hash,
     payer: &Keypair,
-) -> ExecutionResult<Transaction> {
-    let instructions = dex.build_swap_instructions(swap, quote).await?;
-    if instructions.is_empty() {
+) -> ExecutionResult<VersionedTransaction> {
+    let swap_instructions = dex.build_swap_instructions(swap, quote).await?;
+    if swap_instructions.instructions.is_empty() {
         return Err(ExecutionError::TransactionBuildFailed(
             "DEX returned no swap instructions".to_string(),
         ));
     }
 
-    let transaction = TransactionBuilder::new()
-        .payer(swap.payer)
-        .add_instructions(instructions)
-        .build_and_sign(recent_blockhash.to_bytes(), &[payer as &dyn Signer])
+    let lookup_table_accounts = if swap_instructions.address_lookup_tables.is_empty() {
+        Vec::new()
+    } else {
+        let mut accounts = Vec::with_capacity(swap_instructions.address_lookup_tables.len());
+        for table in &swap_instructions.address_lookup_tables {
+            accounts.push(fetch_lookup_table_account(rpc, *table).await?);
+        }
+        accounts
+    };
+
+    let message = v0::Message::try_compile(
+        &swap.payer,
+        &swap_instructions.instructions,
+        &lookup_table_accounts,
+        recent_blockhash,
+    )
+    .map_err(|e| {
+        ExecutionError::TransactionBuildFailed(format!("failed to compile v0 message: {e}"))
+    })?;
+
+    let transaction = VersionedTransaction::try_new(VersionedMessage::V0(message), &[payer])
         .map_err(|e| ExecutionError::TransactionBuildFailed(e.to_string()))?;
 
     let size = bincode::serialize(&transaction)
@@ -76,8 +123,8 @@ pub async fn build_swap_transaction(
     if size > MAX_TRANSACTION_SIZE {
         return Err(ExecutionError::TransactionBuildFailed(format!(
             "assembled swap transaction is {size} bytes, exceeds the {MAX_TRANSACTION_SIZE}-byte \
-             network limit -- this route likely needs address lookup tables, which this function \
-             does not support"
+             network limit even with {} address lookup table(s) applied",
+            lookup_table_accounts.len()
         )));
     }
 
@@ -115,7 +162,7 @@ pub async fn execute_swap(
         .await
         .map_err(|e| ExecutionError::TransactionBuildFailed(e.to_string()))?;
 
-    let swap_transaction = build_swap_transaction(dex, swap, quote, blockhash, payer).await?;
+    let swap_transaction = build_swap_transaction(dex, rpc, swap, quote, blockhash, payer).await?;
 
     let tip_transaction = match tip {
         Some((tip_account, lamports)) => {
@@ -125,7 +172,7 @@ pub async fn execute_swap(
                 .add_instruction(instruction)
                 .build_and_sign(blockhash.to_bytes(), &[payer as &dyn Signer])
                 .map_err(|e| ExecutionError::TransactionBuildFailed(e.to_string()))?;
-            Some(tx)
+            Some(VersionedTransaction::from(tx))
         }
         None => None,
     };
@@ -149,7 +196,7 @@ mod tests {
     use solana_sdk::instruction::{AccountMeta, Instruction};
     use solana_sdk::pubkey::Pubkey;
     use solana_sdk::signature::Keypair;
-    use solstice_dex::{DexError, DexResult, Liquidity, PriceUpdate};
+    use solstice_dex::{DexError, DexResult, Liquidity, PriceUpdate, SwapInstructions};
     use tokio::sync::mpsc;
 
     struct MockDex {
@@ -177,8 +224,11 @@ mod tests {
             &self,
             _swap: &SwapRequest,
             _quote: &Quote,
-        ) -> DexResult<Vec<Instruction>> {
-            Ok(self.instructions.clone())
+        ) -> DexResult<SwapInstructions> {
+            Ok(SwapInstructions {
+                instructions: self.instructions.clone(),
+                address_lookup_tables: Vec::new(),
+            })
         }
 
         async fn subscribe_prices(&self, _markets: &[Pubkey]) -> mpsc::Receiver<PriceUpdate> {
@@ -227,15 +277,24 @@ mod tests {
         }
     }
 
+    /// RPC pointed at an address nothing listens on. Fine for these tests:
+    /// none of them exercise the ALT-fetch path, so `rpc` is never
+    /// actually called.
+    fn test_rpc() -> SolanaRpcClient {
+        SolanaRpcClient::with_endpoints(vec!["http://127.0.0.1:1".to_string()]).unwrap()
+    }
+
     #[tokio::test]
     async fn test_build_swap_transaction_signs_successfully() {
         let payer = Keypair::new();
         let dex = MockDex {
             instructions: vec![small_instruction(payer.pubkey())],
         };
+        let rpc = test_rpc();
 
         let transaction = build_swap_transaction(
             &dex,
+            &rpc,
             &sample_swap(payer.pubkey()),
             &sample_quote(),
             Hash::default(),
@@ -245,7 +304,7 @@ mod tests {
         .unwrap();
 
         assert!(!transaction.signatures.is_empty());
-        assert_eq!(transaction.message.account_keys[0], payer.pubkey());
+        assert_eq!(transaction.message.static_account_keys()[0], payer.pubkey());
     }
 
     #[tokio::test]
@@ -254,9 +313,11 @@ mod tests {
         let dex = MockDex {
             instructions: vec![],
         };
+        let rpc = test_rpc();
 
         let result = build_swap_transaction(
             &dex,
+            &rpc,
             &sample_swap(payer.pubkey()),
             &sample_quote(),
             Hash::default(),
@@ -287,9 +348,11 @@ mod tests {
             })
             .collect();
         let dex = MockDex { instructions };
+        let rpc = test_rpc();
 
         let result = build_swap_transaction(
             &dex,
+            &rpc,
             &sample_swap(payer.pubkey()),
             &sample_quote(),
             Hash::default(),

@@ -6,7 +6,7 @@ use super::bundle::{Bundle, BundleStatus};
 use super::client::JitoClient;
 use super::error::{JitoError, JitoResult};
 use solana_sdk::signature::Signature;
-use solana_sdk::transaction::Transaction;
+use solana_sdk::transaction::VersionedTransaction;
 use solstice_blockchain::SolanaRpcClient;
 use std::time::Duration;
 use tracing::warn;
@@ -38,8 +38,8 @@ pub struct SubmissionOutcome {
 pub async fn submit_with_fallback(
     jito: &JitoClient,
     rpc: &SolanaRpcClient,
-    primary_transactions: &[Transaction],
-    tip_transaction: Option<Transaction>,
+    primary_transactions: &[VersionedTransaction],
+    tip_transaction: Option<VersionedTransaction>,
     confirm_timeout: Duration,
     poll_interval: Duration,
 ) -> JitoResult<SubmissionOutcome> {
@@ -60,7 +60,7 @@ pub async fn submit_with_fallback(
         let signature = rpc
             .send_transaction(transaction)
             .await
-            .map_err(|e| JitoError::Http(e.to_string()))?;
+            .map_err(|e| JitoError::DirectSubmissionFailed(e.to_string()))?;
         signatures.push(signature);
     }
 
@@ -77,8 +77,8 @@ pub async fn submit_with_fallback(
 /// only sees an `Err` for the fallback path's own failures.
 async fn try_jito(
     jito: &JitoClient,
-    primary_transactions: &[Transaction],
-    tip_transaction: Option<Transaction>,
+    primary_transactions: &[VersionedTransaction],
+    tip_transaction: Option<VersionedTransaction>,
     confirm_timeout: Duration,
     poll_interval: Duration,
 ) -> Option<SubmissionOutcome> {
@@ -150,9 +150,10 @@ mod tests {
     use super::*;
     use crate::jito::client::JitoConfig;
     use solana_sdk::message::Message;
+    use solana_sdk::transaction::Transaction;
 
-    fn dummy_transaction() -> Transaction {
-        Transaction::new_unsigned(Message::default())
+    fn dummy_transaction() -> VersionedTransaction {
+        VersionedTransaction::from(Transaction::new_unsigned(Message::default()))
     }
 
     fn test_jito_client() -> JitoClient {
@@ -179,7 +180,8 @@ mod tests {
         // MAX_BUNDLE_TRANSACTIONS primary transactions leave no room for a
         // tip transaction, which should make this bail out before any
         // network call rather than silently dropping the tip.
-        let primaries: Vec<Transaction> = (0..super::super::bundle::MAX_BUNDLE_TRANSACTIONS)
+        let primaries: Vec<VersionedTransaction> = (0
+            ..super::super::bundle::MAX_BUNDLE_TRANSACTIONS)
             .map(|_| dummy_transaction())
             .collect();
 

@@ -516,10 +516,15 @@ COMPLETE (live paper trading via 6.3, historical backtesting via 6.1/6.2/6.4).
 - [x] Phased deployment ✅ automated live trading is now wired up
   (`solstice_execution::live::LiveTradingEngine`) — kill switch defaults
   to disabled, hard capital cap defaults to $50 (the user's stated
-  starting point), adjustable at runtime via `/api/v1/live/config`. Not
-  yet armed against real capital as of this entry — that's the user's
-  call to make, whenever they're ready, via the dashboard's confirmation
-  gate
+  starting point), adjustable at runtime via `/api/v1/live/config`.
+  Armed against real capital ($15) by the user; the first two automated
+  attempts both failed pre-broadcast (no funds lost) on a route needing
+  address lookup tables, which the execution pipeline couldn't yet build
+  — see the Phase 10 changelog entry ("Fix: real-trade failures from the
+  first live run") for the diagnosis and fix (full `VersionedTransaction`
+  support, a mislabeled-error fix, and tighter slippage/latency tuning).
+  Not yet re-verified against a real fill since the fix — the running
+  server needs a restart to pick it up
 - [ ] Monitoring intensified — live event stream + dashboard exist; no
   alerting (email/SMS/push) built
 - [ ] Rapid response team — N/A at this stage (solo user, not a team
@@ -527,9 +532,10 @@ COMPLETE (live paper trading via 6.3, historical backtesting via 6.1/6.2/6.4).
 - **Dependencies**: 10.3
 - **Gate**: First trades executed ✅ manual (previous entry) and the
   automated path is built and verified end-to-end (status/config/kill
-  switch all confirmed against a live server); an *automated* live fill
-  hasn't happened yet since the engine hasn't been armed against real
-  capital
+  switch all confirmed against a live server); the engine has been armed
+  against real capital, but every automated attempt so far has failed
+  pre-broadcast (diagnosed and fixed — see changelog) — an automated live
+  fill has not yet landed on-chain
 
 **Phase 10 Gate**: Trading live with capital deployed — manual execution
 proven for real; automated execution is built, tested, and wired into the

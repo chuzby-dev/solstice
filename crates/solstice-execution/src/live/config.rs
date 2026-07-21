@@ -34,6 +34,17 @@ pub struct LiveTradingConfig {
     pub kelly_fraction: f64,
     pub default_win_loss_ratio: f64,
     pub stop_loss_percent: f64,
+    /// Slippage tolerance passed to Jupiter for both price sampling and
+    /// execution quotes. `execute_planned_trade` re-fetches a quote right
+    /// before submitting, but `JupiterClient::build_swap_instructions`
+    /// fetches its *own* fresh quote again internally (Jupiter's
+    /// `/swap-instructions` needs the exact quote response body), so a
+    /// live submission always trades against a slightly newer price than
+    /// what the caller last saw. 50bps (0.5%) was tight enough that a
+    /// live SOL/USDC attempt reverted on-chain with a Jupiter Route error
+    /// (`0x1788`) most likely for exactly this reason -- widened to 150bps
+    /// (1.5%) to give that price movement room without meaningfully
+    /// affecting fill quality on the small trade sizes this engine targets.
     pub slippage_bps: u32,
     pub poll_interval: Duration,
     /// Jito tip in lamports for each live submission. `None` skips the
@@ -74,7 +85,7 @@ impl Default for LiveTradingConfig {
             kelly_fraction: 0.25,
             default_win_loss_ratio: 2.0,
             stop_loss_percent: 0.1,
-            slippage_bps: 50,
+            slippage_bps: 150,
             poll_interval: Duration::from_secs(15),
             tip_lamports: None,
         }

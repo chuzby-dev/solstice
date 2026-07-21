@@ -2,7 +2,7 @@
 //! via Jupiter's public Quote/Swap-Instructions API.
 
 use crate::error::{DexError, DexResult};
-use crate::traits::DexClient;
+use crate::traits::{DexClient, SwapInstructions};
 use crate::types::{Liquidity, PriceUpdate, Quote, QuoteRequest, RouteSegment, SwapRequest};
 use async_trait::async_trait;
 use base64::Engine;
@@ -13,7 +13,6 @@ use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::warn;
 
 /// Jupiter's on-chain program ID (the aggregator/router program that swaps
 /// ultimately execute through).
@@ -104,7 +103,7 @@ impl DexClient for JupiterClient {
         &self,
         swap: &SwapRequest,
         quote: &Quote,
-    ) -> DexResult<Vec<Instruction>> {
+    ) -> DexResult<SwapInstructions> {
         let quote_response = self
             .fetch_quote(&QuoteRequest::new(
                 swap.input_mint,
@@ -422,15 +421,17 @@ struct SwapInstructionsResponse {
 }
 
 impl SwapInstructionsResponse {
-    fn into_instructions(self) -> DexResult<Vec<Instruction>> {
-        if !self.address_lookup_table_addresses.is_empty() {
-            warn!(
-                "Jupiter swap uses {} address lookup table(s); building instructions without \
-                 them means the resulting transaction may exceed the legacy size limit unless \
-                 the caller assembles a versioned transaction with these ALTs",
-                self.address_lookup_table_addresses.len()
-            );
-        }
+    fn into_instructions(self) -> DexResult<SwapInstructions> {
+        let address_lookup_tables = self
+            .address_lookup_table_addresses
+            .iter()
+            .map(|s| {
+                Pubkey::from_str(s).map_err(|e| DexError::ParseError {
+                    dex: "Jupiter".to_string(),
+                    message: format!("invalid address lookup table pubkey {s}: {e}"),
+                })
+            })
+            .collect::<DexResult<Vec<_>>>()?;
 
         let mut instructions = Vec::new();
         for ix in self.compute_budget_instructions {
@@ -444,7 +445,10 @@ impl SwapInstructionsResponse {
             instructions.push(ix.into_instruction()?);
         }
 
-        Ok(instructions)
+        Ok(SwapInstructions {
+            instructions,
+            address_lookup_tables,
+        })
     }
 }
 
@@ -570,11 +574,12 @@ mod tests {
         });
 
         let response: SwapInstructionsResponse = serde_json::from_value(json).unwrap();
-        let instructions = response.into_instructions().unwrap();
+        let swap_instructions = response.into_instructions().unwrap();
 
-        assert_eq!(instructions.len(), 1);
-        assert_eq!(instructions[0].data, vec![1, 2, 3]);
-        assert_eq!(instructions[0].accounts.len(), 1);
+        assert_eq!(swap_instructions.instructions.len(), 1);
+        assert_eq!(swap_instructions.instructions[0].data, vec![1, 2, 3]);
+        assert_eq!(swap_instructions.instructions[0].accounts.len(), 1);
+        assert!(swap_instructions.address_lookup_tables.is_empty());
     }
 
     #[test]
@@ -614,7 +619,7 @@ mod tests {
             payer,
             slippage_bps: 50,
         };
-        let instructions = client.build_swap_instructions(&swap, &quote).await.unwrap();
+        let swap_instructions = client.build_swap_instructions(&swap, &quote).await.unwrap();
 
         // A real response is several instructions: compute budget (no
         // accounts, just program id + data -- legitimately empty),
@@ -622,9 +627,10 @@ mod tests {
         // `Pubkey::default()` -- also legitimate), and the actual swap
         // instruction routed through Jupiter's own program. That last one
         // is the meaningful sanity check that this is a genuine response.
-        assert!(instructions.len() > 1);
+        assert!(swap_instructions.instructions.len() > 1);
         assert!(
-            instructions
+            swap_instructions
+                .instructions
                 .iter()
                 .any(|ix| &ix.program_id == client.program_id()),
             "expected at least one instruction to route through Jupiter's own program"

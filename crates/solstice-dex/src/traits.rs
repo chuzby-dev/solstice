@@ -7,6 +7,16 @@ use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use tokio::sync::mpsc;
 
+/// Swap instructions plus the address lookup tables (if any) they were
+/// compiled against. A route that needs ALTs won't fit in a legacy
+/// transaction's 1232-byte limit, so callers need these addresses to
+/// assemble a `VersionedTransaction` with a `v0` message instead.
+#[derive(Debug, Clone, Default)]
+pub struct SwapInstructions {
+    pub instructions: Vec<Instruction>,
+    pub address_lookup_tables: Vec<Pubkey>,
+}
+
 /// A single DEX/aggregator integration.
 ///
 /// Implementors must be safe to share across tasks (`Send + Sync`) since a
@@ -30,7 +40,7 @@ pub trait DexClient: Send + Sync {
         &self,
         swap: &SwapRequest,
         quote: &Quote,
-    ) -> DexResult<Vec<Instruction>>;
+    ) -> DexResult<SwapInstructions>;
 
     /// Subscribe to price updates for the given markets. The returned
     /// channel closes when the subscription ends (connection loss for

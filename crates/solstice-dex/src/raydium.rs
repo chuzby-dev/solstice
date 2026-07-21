@@ -19,13 +19,12 @@
 //! error instead of a guess.
 
 use crate::error::{DexError, DexResult};
-use crate::traits::DexClient;
+use crate::traits::{DexClient, SwapInstructions};
 use crate::types::{Liquidity, PriceUpdate, Quote, QuoteRequest, RouteSegment, SwapRequest};
 use async_trait::async_trait;
 use chrono::Utc;
 use raydium_amm::accounts::AmmInfo;
 use raydium_amm::RAYDIUM_AMM_ID;
-use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use solstice_blockchain::SolanaRpcClient;
 use std::collections::HashMap;
@@ -229,7 +228,7 @@ impl DexClient for RaydiumClient {
         &self,
         _swap: &SwapRequest,
         _quote: &Quote,
-    ) -> DexResult<Vec<Instruction>> {
+    ) -> DexResult<SwapInstructions> {
         Err(DexError::InvalidPoolState(
             "Raydium swap instruction building requires the pool's OpenBook/Serum market \
              accounts (bids/asks/event queue/vault signer), which this integration does not \

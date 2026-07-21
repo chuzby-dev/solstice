@@ -151,7 +151,18 @@ pub struct LiveTradingEngine {
     capital_deployed_usd: Mutex<f64>,
     realized_pnl_usd: Mutex<f64>,
     events: broadcast::Sender<LiveEvent>,
+    /// Jito tip accounts, refreshed at most every [`TIP_ACCOUNTS_TTL`]
+    /// rather than on every trade -- fetching them fresh each time adds a
+    /// full network round trip between reading a price and submitting the
+    /// swap built against it, widening the window for the quote to go
+    /// stale and the on-chain route to revert.
+    tip_accounts_cache: Mutex<Option<(std::time::Instant, Vec<Pubkey>)>>,
 }
+
+/// Tip accounts rotate rarely; a few minutes of staleness costs nothing
+/// (any tip account Jito has ever advertised still accepts tips) but saves
+/// a network round trip on every trade attempt.
+const TIP_ACCOUNTS_TTL: Duration = Duration::from_secs(300);
 
 impl LiveTradingEngine {
     pub fn new(
@@ -187,7 +198,36 @@ impl LiveTradingEngine {
             capital_deployed_usd: Mutex::new(0.0),
             realized_pnl_usd: Mutex::new(0.0),
             events,
+            tip_accounts_cache: Mutex::new(None),
         })
+    }
+
+    /// Return Jito's current tip accounts, using a cached value if it's
+    /// fresher than [`TIP_ACCOUNTS_TTL`] and only hitting the network on a
+    /// cache miss or expiry.
+    async fn cached_tip_accounts(&self) -> Vec<Pubkey> {
+        if let Some((fetched_at, accounts)) = self
+            .tip_accounts_cache
+            .lock()
+            .expect("lock poisoned")
+            .clone()
+        {
+            if fetched_at.elapsed() < TIP_ACCOUNTS_TTL {
+                return accounts;
+            }
+        }
+
+        match self.jito.get_tip_accounts().await {
+            Ok(accounts) => {
+                *self.tip_accounts_cache.lock().expect("lock poisoned") =
+                    Some((std::time::Instant::now(), accounts.clone()));
+                accounts
+            }
+            Err(e) => {
+                warn!("failed to refresh Jito tip accounts: {}", e);
+                Vec::new()
+            }
+        }
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<LiveEvent> {
@@ -506,6 +546,37 @@ impl LiveTradingEngine {
             slippage_bps,
         };
 
+        // Load the wallet key and resolve the tip account (cached -- see
+        // `cached_tip_accounts`) *before* fetching the quote we'll actually
+        // trade against, so as little time as possible elapses between
+        // reading that quote and submitting the swap built from it. A
+        // stale quote combined with a tight slippage tolerance is a likely
+        // cause of on-chain reverts.
+        let keypair = match self.wallet_file.load_keypair() {
+            Ok(kp) => kp,
+            Err(e) => {
+                self.emit(LiveEvent::OrderFailed {
+                    strategy: signal.strategy.clone(),
+                    pair_label: planned.pair_label.clone(),
+                    reason: format!("failed to load wallet key: {e}"),
+                });
+                return;
+            }
+        };
+
+        let tip_lamports = self
+            .config
+            .lock()
+            .expect("config lock poisoned")
+            .tip_lamports;
+        let tip = match tip_lamports {
+            Some(lamports) => {
+                let accounts = self.cached_tip_accounts().await;
+                accounts.first().map(|&account| (account, lamports))
+            }
+            None => None,
+        };
+
         let quote = match self
             .dex
             .get_quote(&QuoteRequest::new(
@@ -525,31 +596,6 @@ impl LiveTradingEngine {
                 });
                 return;
             }
-        };
-
-        let keypair = match self.wallet_file.load_keypair() {
-            Ok(kp) => kp,
-            Err(e) => {
-                self.emit(LiveEvent::OrderFailed {
-                    strategy: signal.strategy.clone(),
-                    pair_label: planned.pair_label.clone(),
-                    reason: format!("failed to load wallet key: {e}"),
-                });
-                return;
-            }
-        };
-
-        let tip_lamports = self
-            .config
-            .lock()
-            .expect("config lock poisoned")
-            .tip_lamports;
-        let tip = match tip_lamports {
-            Some(lamports) => match self.jito.get_tip_accounts().await {
-                Ok(accounts) if !accounts.is_empty() => Some((accounts[0], lamports)),
-                _ => None,
-            },
-            None => None,
         };
 
         let outcome = execute_swap(

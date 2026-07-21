@@ -9,6 +9,7 @@
 use solana_sdk::signature::{Keypair, Signer};
 #[allow(deprecated)]
 use solana_sdk::system_instruction;
+use solana_sdk::transaction::VersionedTransaction;
 use solstice_blockchain::transaction::TransactionBuilder;
 use solstice_blockchain::SolanaRpcClient;
 use std::time::Duration;
@@ -45,6 +46,7 @@ async fn main() {
         .add_instruction(instruction)
         .build_and_sign(blockhash.to_bytes(), &[&payer])
         .expect("failed to build/sign transaction");
+    let transaction = VersionedTransaction::from(transaction);
 
     let signature = client
         .send_transaction(&transaction)

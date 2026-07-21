@@ -27,6 +27,9 @@ pub enum JitoError {
 
     #[error("transaction serialization failed: {0}")]
     Serialization(String),
+
+    #[error("direct RPC submission failed after Jito fallback: {0}")]
+    DirectSubmissionFailed(String),
 }
 
 pub type JitoResult<T> = std::result::Result<T, JitoError>;

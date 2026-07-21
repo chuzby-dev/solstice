@@ -233,7 +233,7 @@ async fn main() {
             .get_latest_blockhash()
             .await
             .expect("failed to fetch blockhash");
-        let transaction = build_swap_transaction(&dex, &swap, &quote, blockhash, &keypair)
+        let transaction = build_swap_transaction(&dex, &rpc, &swap, &quote, blockhash, &keypair)
             .await
             .expect("failed to build swap transaction");
         let size = bincode::serialize(&transaction).unwrap().len();

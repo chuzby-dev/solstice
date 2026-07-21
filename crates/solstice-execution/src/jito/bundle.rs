@@ -7,7 +7,7 @@
 //! supplies.
 
 use super::error::{JitoError, JitoResult};
-use solana_sdk::transaction::Transaction;
+use solana_sdk::transaction::VersionedTransaction;
 
 pub const MAX_BUNDLE_TRANSACTIONS: usize = 5;
 
@@ -15,7 +15,7 @@ pub const MAX_BUNDLE_TRANSACTIONS: usize = 5;
 /// bundle.
 #[derive(Debug, Clone, Default)]
 pub struct Bundle {
-    transactions: Vec<Transaction>,
+    transactions: Vec<VersionedTransaction>,
 }
 
 impl Bundle {
@@ -27,7 +27,7 @@ impl Bundle {
 
     /// Append a transaction, rejecting anything past Jito's 5-transaction
     /// bundle cap rather than silently truncating.
-    pub fn add_transaction(&mut self, transaction: Transaction) -> JitoResult<()> {
+    pub fn add_transaction(&mut self, transaction: VersionedTransaction) -> JitoResult<()> {
         if self.transactions.len() >= MAX_BUNDLE_TRANSACTIONS {
             return Err(JitoError::BundleTooLarge {
                 max: MAX_BUNDLE_TRANSACTIONS,
@@ -38,7 +38,7 @@ impl Bundle {
         Ok(())
     }
 
-    pub fn transactions(&self) -> &[Transaction] {
+    pub fn transactions(&self) -> &[VersionedTransaction] {
         &self.transactions
     }
 
@@ -91,9 +91,10 @@ pub enum BundleStatus {
 mod tests {
     use super::*;
     use solana_sdk::message::Message;
+    use solana_sdk::transaction::Transaction;
 
-    fn dummy_transaction() -> Transaction {
-        Transaction::new_unsigned(Message::default())
+    fn dummy_transaction() -> VersionedTransaction {
+        VersionedTransaction::from(Transaction::new_unsigned(Message::default()))
     }
 
     #[test]
