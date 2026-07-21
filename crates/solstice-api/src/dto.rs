@@ -22,6 +22,14 @@ pub struct LiveConfigRequest {
     /// Fractional gain (e.g. `0.05` = 5%) at which an open position
     /// auto-closes.
     pub take_profit_percent: Option<f64>,
+    /// Arms/disarms the cross-DEX arbitrage executor. See
+    /// `LiveTradingConfig::cross_dex_arb_enabled`'s doc comment -- this
+    /// is a materially different risk profile from ordinary trading
+    /// (two non-atomic live transactions per opportunity).
+    pub cross_dex_arb_enabled: Option<bool>,
+    /// Minimum spread (e.g. `0.015` = 1.5%) required across registered
+    /// DEXes before the cross-DEX arbitrage executor acts.
+    pub cross_dex_min_spread: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

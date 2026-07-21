@@ -93,6 +93,36 @@ pub enum LiveEvent {
     TakeProfitPercentChanged {
         take_profit_percent: f64,
     },
+    CrossDexArbEnabledChanged {
+        cross_dex_arb_enabled: bool,
+    },
+    CrossDexMinSpreadChanged {
+        cross_dex_min_spread: f64,
+    },
+    CrossDexOpportunityDetected {
+        pair_label: String,
+        buy_dex: String,
+        sell_dex: String,
+        buy_price: f64,
+        sell_price: f64,
+        spread_percent: f64,
+    },
+    CrossDexArbFilled {
+        pair_label: String,
+        buy_dex: String,
+        sell_dex: String,
+        size_usd: u64,
+        buy_price: f64,
+        sell_price: f64,
+        realized_pnl_usd: f64,
+        buy_signature: Option<String>,
+        sell_signature: Option<String>,
+    },
+    CrossDexArbFailed {
+        pair_label: String,
+        leg: String,
+        reason: String,
+    },
     TickCompleted {
         timestamp: DateTime<Utc>,
         signal_count: usize,
@@ -116,6 +146,8 @@ pub struct LiveStatusSnapshot {
     pub max_capital_usd: f64,
     pub min_confidence: f64,
     pub take_profit_percent: f64,
+    pub cross_dex_arb_enabled: bool,
+    pub cross_dex_min_spread: f64,
     pub capital_deployed_usd: f64,
     pub capital_available_usd: f64,
     pub realized_pnl_usd: f64,
@@ -142,6 +174,20 @@ struct PlannedTrade {
     pair_label: String,
     is_buy: bool,
     size_usd: u64,
+}
+
+/// A detected cross-DEX price discrepancy for a pair: the cheapest
+/// registered DEX to buy on and the priciest to sell on, if the gap
+/// between them clears `cross_dex_min_spread`. Detecting this is cheap
+/// (a handful of quote requests); acting on it is not risk-free -- see
+/// `LiveTradingConfig::cross_dex_arb_enabled`'s doc comment.
+#[derive(Debug, Clone)]
+struct ArbOpportunity {
+    buy_dex: String,
+    sell_dex: String,
+    buy_price: f64,
+    sell_price: f64,
+    spread: f64,
 }
 
 pub struct LiveTradingEngine {
@@ -316,6 +362,32 @@ impl LiveTradingEngine {
         });
     }
 
+    /// Arms or disarms the cross-DEX arbitrage executor. See
+    /// `LiveTradingConfig::cross_dex_arb_enabled`'s doc comment for why
+    /// this is a separate gate from `enable`/`disable`: it issues two
+    /// non-atomic live transactions per opportunity, a materially
+    /// different risk profile from every other trade this engine makes.
+    pub fn set_cross_dex_arb_enabled(&self, cross_dex_arb_enabled: bool) {
+        let mut config = self.config.lock().expect("config lock poisoned");
+        config.cross_dex_arb_enabled = cross_dex_arb_enabled;
+        drop(config);
+        self.emit(LiveEvent::CrossDexArbEnabledChanged {
+            cross_dex_arb_enabled,
+        });
+    }
+
+    /// Set the minimum spread (e.g. `0.015` = 1.5%) required across
+    /// registered DEXes before the cross-DEX arbitrage executor acts.
+    /// Read fresh from config every `evaluate_cross_dex_arbitrage` call.
+    pub fn set_cross_dex_min_spread(&self, cross_dex_min_spread: f64) {
+        let mut config = self.config.lock().expect("config lock poisoned");
+        config.cross_dex_min_spread = cross_dex_min_spread;
+        drop(config);
+        self.emit(LiveEvent::CrossDexMinSpreadChanged {
+            cross_dex_min_spread,
+        });
+    }
+
     fn pair_label(&self, pair: &TokenPair) -> String {
         self.pairs
             .iter()
@@ -335,6 +407,8 @@ impl LiveTradingEngine {
             max_capital_usd: config.max_capital_usd,
             min_confidence: config.min_confidence,
             take_profit_percent: config.take_profit_percent,
+            cross_dex_arb_enabled: config.cross_dex_arb_enabled,
+            cross_dex_min_spread: config.cross_dex_min_spread,
             capital_deployed_usd,
             capital_available_usd: (config.max_capital_usd - capital_deployed_usd).max(0.0),
             realized_pnl_usd: *self.realized_pnl_usd.lock().expect("lock poisoned"),
@@ -374,6 +448,7 @@ impl LiveTradingEngine {
     pub async fn tick(&self) -> ExecutionResult<Vec<Signal>> {
         let snapshot = self.sample_market().await?;
         self.evaluate_stop_losses(&snapshot).await;
+        self.evaluate_cross_dex_arbitrage().await;
 
         let portfolio_state = self.portfolio_state();
         let signals = self
@@ -949,6 +1024,389 @@ impl LiveTradingEngine {
         }
     }
 
+    /// Quotes every registered DEX individually for `pair` (like
+    /// `sample_market`, but keeping the DEX name attached to each price
+    /// instead of collapsing to an untagged `Price` list) and returns the
+    /// cheapest-vs-priciest gap, if any two distinct DEXes both quoted.
+    async fn find_arb_opportunity(&self, pair: &LiveTradedPair) -> Option<ArbOpportunity> {
+        let slippage_bps = self
+            .config
+            .lock()
+            .expect("config lock poisoned")
+            .slippage_bps;
+
+        let mut observations: Vec<(String, f64)> = Vec::with_capacity(3);
+        for (name, has_pool) in [
+            ("Jupiter", true),
+            ("Raydium", pair.raydium_pool.is_some()),
+            ("Orca", pair.orca_pool.is_some()),
+        ] {
+            if !has_pool {
+                continue;
+            }
+            let Ok(client) = self.dex.get_client(name) else {
+                continue;
+            };
+            let request = QuoteRequest::new(
+                pair.base_mint,
+                pair.quote_mint,
+                pair.reference_amount,
+                slippage_bps,
+            );
+            if let Ok(quote) = client.get_quote(&request).await {
+                observations.push((name.to_string(), pair_price(pair, &quote)));
+            }
+        }
+
+        if observations.len() < 2 {
+            return None;
+        }
+
+        let min = observations
+            .iter()
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))?;
+        let max = observations
+            .iter()
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))?;
+
+        if min.0 == max.0 || min.1 <= 0.0 {
+            return None;
+        }
+
+        Some(ArbOpportunity {
+            buy_dex: min.0.clone(),
+            sell_dex: max.0.clone(),
+            buy_price: min.1,
+            sell_price: max.1,
+            spread: (max.1 - min.1) / min.1,
+        })
+    }
+
+    /// Runs the cross-DEX arbitrage executor over every configured pair,
+    /// if armed (`cross_dex_arb_enabled`). Skips any pair with an already
+    /// open position -- one attempt at a time per pair, so a failed
+    /// second leg's tracked inventory (see `execute_cross_dex_arb`) isn't
+    /// compounded by a fresh attempt on top of it.
+    async fn evaluate_cross_dex_arbitrage(&self) {
+        let (cross_dex_arb_enabled, min_spread) = {
+            let config = self.config.lock().expect("config lock poisoned");
+            (config.cross_dex_arb_enabled, config.cross_dex_min_spread)
+        };
+        if !cross_dex_arb_enabled {
+            return;
+        }
+
+        for pair in self.pairs.iter().copied() {
+            let token_pair = TokenPair::new(pair.base_mint, pair.quote_mint);
+            if self
+                .positions
+                .lock()
+                .expect("positions lock poisoned")
+                .contains_key(&token_pair)
+            {
+                continue;
+            }
+
+            let Some(opportunity) = self.find_arb_opportunity(&pair).await else {
+                continue;
+            };
+            if opportunity.spread < min_spread {
+                continue;
+            }
+
+            self.emit(LiveEvent::CrossDexOpportunityDetected {
+                pair_label: pair.label.to_string(),
+                buy_dex: opportunity.buy_dex.clone(),
+                sell_dex: opportunity.sell_dex.clone(),
+                buy_price: opportunity.buy_price,
+                sell_price: opportunity.sell_price,
+                spread_percent: opportunity.spread * 100.0,
+            });
+            self.execute_cross_dex_arb(&pair, opportunity).await;
+        }
+    }
+
+    /// Buys `pair.base_mint` on `opportunity.buy_dex` then immediately
+    /// sells the received quantity on `opportunity.sell_dex`. **Not
+    /// atomic** -- these are two separate transactions, so a real price
+    /// move between them (or an outright failure of the second leg) is
+    /// possible; see `LiveTradingConfig::cross_dex_arb_enabled`. If the
+    /// sell leg fails after the buy leg lands, the bought inventory is
+    /// registered as a normal tracked position (protected by
+    /// stop-loss/take-profit from that point on) rather than left an
+    /// untracked wallet balance.
+    async fn execute_cross_dex_arb(&self, pair: &LiveTradedPair, opportunity: ArbOpportunity) {
+        let pair_label = pair.label.to_string();
+        let token_pair = TokenPair::new(pair.base_mint, pair.quote_mint);
+
+        if !self.is_enabled() {
+            self.emit(LiveEvent::WouldTrade {
+                strategy: "CrossDexArb".to_string(),
+                pair_label,
+                size_usd: 0,
+                is_buy: true,
+            });
+            return;
+        }
+
+        let (size_usd, slippage_bps, tip_lamports) = {
+            let config = self.config.lock().expect("config lock poisoned");
+            let capital_deployed_usd = *self.capital_deployed_usd.lock().expect("lock poisoned");
+            let remaining_headroom = (config.risk_limits.position.max_single_position_usd as f64)
+                .min(config.max_capital_usd - capital_deployed_usd)
+                .max(0.0);
+            let min_position_size_usd = config.risk_limits.position.min_position_size_usd as f64;
+            if remaining_headroom < min_position_size_usd {
+                self.emit(LiveEvent::CrossDexArbFailed {
+                    pair_label,
+                    leg: "sizing".to_string(),
+                    reason: "insufficient capital headroom for a cross-DEX arb trade".to_string(),
+                });
+                return;
+            }
+            (
+                remaining_headroom.floor() as u64,
+                config.slippage_bps,
+                config.tip_lamports,
+            )
+        };
+
+        let keypair = match self.wallet_file.load_keypair() {
+            Ok(kp) => kp,
+            Err(e) => {
+                self.emit(LiveEvent::CrossDexArbFailed {
+                    pair_label,
+                    leg: "buy".to_string(),
+                    reason: format!("failed to load wallet key: {e}"),
+                });
+                return;
+            }
+        };
+
+        let tip = match tip_lamports {
+            Some(lamports) => {
+                let accounts = self.cached_tip_accounts().await;
+                accounts.first().map(|&account| (account, lamports))
+            }
+            None => None,
+        };
+
+        // --- Leg 1: buy on the cheaper DEX ---
+        let Ok(buy_client) = self.dex.get_client(&opportunity.buy_dex) else {
+            self.emit(LiveEvent::CrossDexArbFailed {
+                pair_label,
+                leg: "buy".to_string(),
+                reason: format!("failed to resolve {} client", opportunity.buy_dex),
+            });
+            return;
+        };
+
+        let quote_amount_raw =
+            (size_usd as f64 * 10f64.powi(pair.quote_decimals as i32)).round() as u64;
+        let buy_swap = SwapRequest {
+            input_mint: pair.quote_mint,
+            output_mint: pair.base_mint,
+            amount: quote_amount_raw,
+            payer: self.wallet_pubkey,
+            slippage_bps,
+        };
+
+        let buy_quote = match buy_client
+            .get_quote(&QuoteRequest::new(
+                buy_swap.input_mint,
+                buy_swap.output_mint,
+                buy_swap.amount,
+                slippage_bps,
+            ))
+            .await
+        {
+            Ok(q) => q,
+            Err(e) => {
+                self.emit(LiveEvent::CrossDexArbFailed {
+                    pair_label,
+                    leg: "buy".to_string(),
+                    reason: format!(
+                        "failed to fetch buy quote from {}: {e}",
+                        opportunity.buy_dex
+                    ),
+                });
+                return;
+            }
+        };
+
+        let base_balance_before = self
+            .rpc
+            .get_token_balance(&self.wallet_pubkey, &pair.base_mint)
+            .await
+            .unwrap_or(0);
+
+        let buy_outcome = execute_swap(
+            &self.jito,
+            &self.rpc,
+            buy_client.as_ref(),
+            &buy_swap,
+            &buy_quote,
+            &keypair,
+            tip,
+            Duration::from_secs(60),
+            Duration::from_secs(2),
+        )
+        .await;
+
+        let buy_outcome = match buy_outcome {
+            Ok(o) => o,
+            Err(e) => {
+                self.emit(LiveEvent::CrossDexArbFailed {
+                    pair_label,
+                    leg: "buy".to_string(),
+                    reason: e.to_string(),
+                });
+                return;
+            }
+        };
+
+        // Leg 1 landed. Read the actual received quantity from the
+        // balance delta rather than trusting `buy_quote.out_amount` --
+        // the two legs are separate transactions, not atomic, so the
+        // real fill can differ from the quote.
+        let base_balance_after = match self
+            .rpc
+            .get_token_balance(&self.wallet_pubkey, &pair.base_mint)
+            .await
+        {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(
+                    "failed to read post-buy balance for {}: {} -- falling back to quoted amount",
+                    pair_label, e
+                );
+                base_balance_before.saturating_add(buy_quote.out_amount)
+            }
+        };
+        let received_quantity = base_balance_after.saturating_sub(base_balance_before);
+        if received_quantity == 0 {
+            self.emit(LiveEvent::CrossDexArbFailed {
+                pair_label,
+                leg: "buy".to_string(),
+                reason: "buy leg landed but no base token balance increase was observed"
+                    .to_string(),
+            });
+            return;
+        }
+
+        let buy_price = quote_price(pair, &buy_quote);
+
+        // Track this as an open position immediately, before attempting
+        // the sell leg -- if that leg fails below, this inventory must
+        // stay visible and protected by stop-loss/take-profit rather
+        // than becoming an untracked wallet balance.
+        *self.capital_deployed_usd.lock().expect("lock poisoned") += size_usd as f64;
+        self.positions.lock().expect("lock poisoned").insert(
+            token_pair,
+            LivePosition {
+                id: PositionId::new(),
+                pair: token_pair,
+                quantity_raw: received_quantity,
+                entry_price: buy_price,
+                current_price: buy_price,
+                allocated_usd: size_usd as f64,
+                opened_at: Utc::now(),
+            },
+        );
+
+        // --- Leg 2: sell on the pricier DEX ---
+        let Ok(sell_client) = self.dex.get_client(&opportunity.sell_dex) else {
+            self.emit(LiveEvent::CrossDexArbFailed {
+                pair_label,
+                leg: "sell".to_string(),
+                reason: format!(
+                    "failed to resolve {} client -- position tracked, protected by stop-loss/take-profit",
+                    opportunity.sell_dex
+                ),
+            });
+            return;
+        };
+
+        let sell_swap = SwapRequest {
+            input_mint: pair.base_mint,
+            output_mint: pair.quote_mint,
+            amount: received_quantity,
+            payer: self.wallet_pubkey,
+            slippage_bps,
+        };
+
+        let sell_quote = match sell_client
+            .get_quote(&QuoteRequest::new(
+                sell_swap.input_mint,
+                sell_swap.output_mint,
+                sell_swap.amount,
+                slippage_bps,
+            ))
+            .await
+        {
+            Ok(q) => q,
+            Err(e) => {
+                self.emit(LiveEvent::CrossDexArbFailed {
+                    pair_label,
+                    leg: "sell".to_string(),
+                    reason: format!(
+                        "failed to fetch sell quote from {}: {e} -- position tracked, protected by stop-loss/take-profit",
+                        opportunity.sell_dex
+                    ),
+                });
+                return;
+            }
+        };
+
+        let sell_outcome = execute_swap(
+            &self.jito,
+            &self.rpc,
+            sell_client.as_ref(),
+            &sell_swap,
+            &sell_quote,
+            &keypair,
+            tip,
+            Duration::from_secs(60),
+            Duration::from_secs(2),
+        )
+        .await;
+
+        match sell_outcome {
+            Ok(outcome) => {
+                let realized_sell_price = sell_price(pair, &sell_quote);
+                let exit_value_usd =
+                    sell_quote.out_amount as f64 / 10f64.powi(pair.quote_decimals as i32);
+                let realized_pnl = exit_value_usd - size_usd as f64;
+
+                self.positions
+                    .lock()
+                    .expect("lock poisoned")
+                    .remove(&token_pair);
+                *self.capital_deployed_usd.lock().expect("lock poisoned") -= size_usd as f64;
+                *self.realized_pnl_usd.lock().expect("lock poisoned") += realized_pnl;
+
+                self.emit(LiveEvent::CrossDexArbFilled {
+                    pair_label,
+                    buy_dex: opportunity.buy_dex.clone(),
+                    sell_dex: opportunity.sell_dex.clone(),
+                    size_usd,
+                    buy_price,
+                    sell_price: realized_sell_price,
+                    realized_pnl_usd: realized_pnl,
+                    buy_signature: buy_outcome.signatures.first().map(|s| s.to_string()),
+                    sell_signature: outcome.signatures.first().map(|s| s.to_string()),
+                });
+            }
+            Err(e) => {
+                self.emit(LiveEvent::CrossDexArbFailed {
+                    pair_label,
+                    leg: "sell".to_string(),
+                    reason: format!("{e} -- position tracked, protected by stop-loss/take-profit"),
+                });
+            }
+        }
+    }
+
     async fn close_position(&self, id: PositionId, reason: String) {
         let position_info = {
             let positions = self.positions.lock().expect("lock poisoned");
@@ -1161,6 +1619,8 @@ mod tests {
             default_win_loss_ratio: 2.0,
             stop_loss_percent: 0.1,
             take_profit_percent: 0.05,
+            cross_dex_arb_enabled: false,
+            cross_dex_min_spread: 0.015,
             slippage_bps: 50,
             poll_interval: Duration::from_secs(3600),
             tip_lamports: None,
@@ -1471,6 +1931,78 @@ mod tests {
         assert!(
             saw_take_profit_skip,
             "expected a take-profit close attempt while disabled"
+        );
+    }
+
+    #[test]
+    fn test_set_cross_dex_arb_enabled_updates_status() {
+        let pair = test_pair();
+        let engine = test_engine(pair, 50.0);
+        assert!(!engine.status().cross_dex_arb_enabled);
+
+        engine.set_cross_dex_arb_enabled(true);
+        assert!(engine.status().cross_dex_arb_enabled);
+    }
+
+    #[test]
+    fn test_set_cross_dex_min_spread_updates_status() {
+        let pair = test_pair();
+        let engine = test_engine(pair, 50.0);
+        assert_eq!(engine.status().cross_dex_min_spread, 0.015);
+
+        engine.set_cross_dex_min_spread(0.03);
+        assert_eq!(engine.status().cross_dex_min_spread, 0.03);
+    }
+
+    #[tokio::test]
+    async fn test_evaluate_cross_dex_arbitrage_noop_when_disabled() {
+        // Disabled by default (`cross_dex_arb_enabled: false` in
+        // `test_config`) -- must return without attempting any network
+        // I/O, since `test_engine` points at an unreachable RPC endpoint
+        // and would hang/error if this actually tried to quote.
+        let pair = test_pair();
+        let engine = test_engine(pair, 50.0);
+        let mut events = engine.subscribe();
+
+        engine.evaluate_cross_dex_arbitrage().await;
+
+        assert!(events.try_recv().is_err(), "expected no events at all");
+    }
+
+    #[tokio::test]
+    async fn test_evaluate_cross_dex_arbitrage_skips_pair_with_open_position() {
+        // Even if armed, a pair with an already-open position must be
+        // skipped before any quoting happens -- otherwise a failed
+        // second leg's tracked inventory (see `execute_cross_dex_arb`)
+        // could be compounded by a fresh attempt on top of it. Verified
+        // indirectly: this would otherwise attempt a network quote
+        // against the unreachable test RPC endpoint and fail loudly
+        // rather than silently continuing, so a clean no-event return
+        // confirms the skip fired first.
+        let pair = test_pair();
+        let token_pair = TokenPair::new(pair.base_mint, pair.quote_mint);
+        let engine = test_engine(pair, 50.0);
+        engine.set_cross_dex_arb_enabled(true);
+
+        engine.positions.lock().unwrap().insert(
+            token_pair,
+            LivePosition {
+                id: PositionId::new(),
+                pair: token_pair,
+                quantity_raw: 1_000_000_000,
+                entry_price: 100.0,
+                current_price: 100.0,
+                allocated_usd: 10.0,
+                opened_at: Utc::now(),
+            },
+        );
+
+        let mut events = engine.subscribe();
+        engine.evaluate_cross_dex_arbitrage().await;
+
+        assert!(
+            events.try_recv().is_err(),
+            "expected the already-positioned pair to be skipped with no events"
         );
     }
 }

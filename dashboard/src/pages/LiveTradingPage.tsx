@@ -6,6 +6,7 @@ import { StatTile, formatUsd } from '../components/StatTile';
 import type { LiveEvent } from '../api/types';
 
 const CONFIRM_PHRASE = 'ENABLE LIVE TRADING';
+const ARB_CONFIRM_PHRASE = 'ENABLE CROSS-DEX ARB';
 
 function describeLiveEvent(event: LiveEvent): { text: string; tone: 'neutral' | 'good' | 'warning' | 'critical' } {
   switch (event.type) {
@@ -51,6 +52,31 @@ function describeLiveEvent(event: LiveEvent): { text: string; tone: 'neutral' | 
         text: `Take-profit target changed to ${(event.take_profit_percent * 100).toFixed(0)}%`,
         tone: 'neutral',
       };
+    case 'CrossDexArbEnabledChanged':
+      return {
+        text: `Cross-DEX arbitrage ${event.cross_dex_arb_enabled ? 'ARMED' : 'disarmed'}`,
+        tone: event.cross_dex_arb_enabled ? 'warning' : 'neutral',
+      };
+    case 'CrossDexMinSpreadChanged':
+      return {
+        text: `Cross-DEX min spread changed to ${(event.cross_dex_min_spread * 100).toFixed(2)}%`,
+        tone: 'neutral',
+      };
+    case 'CrossDexOpportunityDetected':
+      return {
+        text: `Spread on ${event.pair_label}: buy ${event.buy_dex} @ $${event.buy_price.toFixed(4)}, sell ${event.sell_dex} @ $${event.sell_price.toFixed(4)} (${event.spread_percent.toFixed(2)}%)`,
+        tone: 'neutral',
+      };
+    case 'CrossDexArbFilled':
+      return {
+        text: `ARB FILLED: ${event.pair_label} — bought ${formatUsd(event.size_usd)} on ${event.buy_dex} @ $${event.buy_price.toFixed(4)}, sold on ${event.sell_dex} @ $${event.sell_price.toFixed(4)} (${formatUsd(event.realized_pnl_usd)} realized)`,
+        tone: event.realized_pnl_usd >= 0 ? 'good' : 'critical',
+      };
+    case 'CrossDexArbFailed':
+      return {
+        text: `ARB FAILED (${event.leg} leg) on ${event.pair_label}: ${event.reason}`,
+        tone: 'critical',
+      };
     case 'TickCompleted':
       return { text: `Tick complete — ${event.signal_count} signal(s)`, tone: 'neutral' };
   }
@@ -69,6 +95,8 @@ export function LiveTradingPage() {
   const [maxCapitalInput, setMaxCapitalInput] = useState('');
   const [minConfidenceInput, setMinConfidenceInput] = useState('');
   const [takeProfitInput, setTakeProfitInput] = useState('');
+  const [crossDexSpreadInput, setCrossDexSpreadInput] = useState('');
+  const [arbConfirmText, setArbConfirmText] = useState('');
   const [confirmText, setConfirmText] = useState('');
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -120,6 +148,50 @@ export function LiveTradingPage() {
     try {
       await api.liveSetTakeProfitPercent(percent / 100);
       setTakeProfitInput('');
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSetCrossDexSpread = async () => {
+    const percent = Number(crossDexSpreadInput);
+    if (!Number.isFinite(percent) || percent <= 0 || percent > 1000) {
+      setActionError('Enter a valid positive percentage.');
+      return;
+    }
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api.liveSetCrossDexMinSpread(percent / 100);
+      setCrossDexSpreadInput('');
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleArmCrossDexArb = async () => {
+    if (arbConfirmText !== ARB_CONFIRM_PHRASE) return;
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api.liveSetCrossDexArbEnabled(true);
+      setArbConfirmText('');
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDisarmCrossDexArb = async () => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api.liveSetCrossDexArbEnabled(false);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -190,6 +262,15 @@ export function LiveTradingPage() {
             <StatTile
               label="Take-profit target"
               value={`${(status.take_profit_percent * 100).toFixed(0)}%`}
+            />
+            <StatTile
+              label="Cross-DEX arbitrage"
+              value={status.cross_dex_arb_enabled ? 'ARMED' : 'Disarmed'}
+              tone={status.cross_dex_arb_enabled ? 'critical' : 'good'}
+            />
+            <StatTile
+              label="Cross-DEX min spread"
+              value={`${(status.cross_dex_min_spread * 100).toFixed(2)}%`}
             />
           </div>
 
@@ -319,6 +400,81 @@ export function LiveTradingPage() {
               </div>
               <p className="mt-2 text-xs text-[var(--text-muted)]">
                 An open position auto-closes once its gain crosses this threshold. Default 5%.
+              </p>
+            </div>
+
+            {/* Cross-DEX arbitrage min spread */}
+            <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-1)] p-4">
+              <div className="mb-3 text-sm font-medium text-[var(--text-secondary)]">
+                Cross-DEX min spread ({(status.cross_dex_min_spread * 100).toFixed(2)}% currently)
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  value={crossDexSpreadInput}
+                  onChange={(e) => setCrossDexSpreadInput(e.target.value)}
+                  placeholder="e.g. 1.5"
+                  className="flex-1 rounded-md border border-[var(--border)] bg-[var(--page)] px-3 py-2 text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={handleSetCrossDexSpread}
+                  disabled={busy || crossDexSpreadInput === ''}
+                  className="shrink-0 rounded-md border border-[var(--border)] px-3 py-2 text-sm font-medium hover:bg-[var(--border)] disabled:opacity-40"
+                >
+                  Save
+                </button>
+              </div>
+              <p className="mt-2 text-xs text-[var(--text-muted)]">
+                Minimum price gap between the cheapest and priciest DEX quote to attempt an
+                arbitrage trade. Default 1.5% -- set well above the cost of two separate swaps.
+              </p>
+            </div>
+
+            {/* Cross-DEX arbitrage arm switch */}
+            <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-1)] p-4">
+              <div className="mb-3 text-sm font-medium text-[var(--text-secondary)]">
+                Cross-DEX arbitrage executor
+              </div>
+              {status.cross_dex_arb_enabled ? (
+                <button
+                  type="button"
+                  onClick={handleDisarmCrossDexArb}
+                  disabled={busy}
+                  className="w-full rounded-md bg-[var(--status-critical)] px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                >
+                  Disarm cross-DEX arbitrage
+                </button>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  <label className="text-xs text-[var(--text-muted)]">
+                    Type <code>{ARB_CONFIRM_PHRASE}</code> to arm:
+                  </label>
+                  <input
+                    type="text"
+                    value={arbConfirmText}
+                    onChange={(e) => setArbConfirmText(e.target.value)}
+                    placeholder={ARB_CONFIRM_PHRASE}
+                    className="rounded-md border border-[var(--border)] bg-[var(--page)] px-3 py-2 text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleArmCrossDexArb}
+                    disabled={busy || arbConfirmText !== ARB_CONFIRM_PHRASE}
+                    className="w-full rounded-md bg-[var(--status-warning)] px-4 py-2 text-sm font-semibold text-black hover:opacity-90 disabled:opacity-40"
+                  >
+                    Arm cross-DEX arbitrage
+                  </button>
+                </div>
+              )}
+              <p className="mt-2 text-xs text-[var(--text-muted)]">
+                Buys on whichever registered DEX quotes cheapest and immediately sells on
+                whichever quotes priciest. <strong>Not atomic</strong> -- two separate
+                transactions, so real execution-price risk exists between them. If the second
+                leg fails, the bought inventory is tracked as a normal open position, protected
+                by stop-loss/take-profit above.
               </p>
             </div>
           </div>

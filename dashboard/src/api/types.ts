@@ -130,6 +130,8 @@ export interface LiveStatusResponse {
   max_capital_usd: number;
   min_confidence: number;
   take_profit_percent: number;
+  cross_dex_arb_enabled: boolean;
+  cross_dex_min_spread: number;
   capital_deployed_usd: number;
   capital_available_usd: number;
   realized_pnl_usd: number;
@@ -163,4 +165,28 @@ export type LiveEvent =
   | { type: 'MaxCapitalChanged'; max_capital_usd: number }
   | { type: 'MinConfidenceChanged'; min_confidence: number }
   | { type: 'TakeProfitPercentChanged'; take_profit_percent: number }
+  | { type: 'CrossDexArbEnabledChanged'; cross_dex_arb_enabled: boolean }
+  | { type: 'CrossDexMinSpreadChanged'; cross_dex_min_spread: number }
+  | {
+      type: 'CrossDexOpportunityDetected';
+      pair_label: string;
+      buy_dex: string;
+      sell_dex: string;
+      buy_price: number;
+      sell_price: number;
+      spread_percent: number;
+    }
+  | {
+      type: 'CrossDexArbFilled';
+      pair_label: string;
+      buy_dex: string;
+      sell_dex: string;
+      size_usd: number;
+      buy_price: number;
+      sell_price: number;
+      realized_pnl_usd: number;
+      buy_signature: string | null;
+      sell_signature: string | null;
+    }
+  | { type: 'CrossDexArbFailed'; pair_label: string; leg: string; reason: string }
   | { type: 'TickCompleted'; timestamp: string; signal_count: number };

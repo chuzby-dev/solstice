@@ -64,6 +64,10 @@ export const api = {
     postJson<LiveStatusResponse>('/live/config', { min_confidence }),
   liveSetTakeProfitPercent: (take_profit_percent: number) =>
     postJson<LiveStatusResponse>('/live/config', { take_profit_percent }),
+  liveSetCrossDexArbEnabled: (cross_dex_arb_enabled: boolean) =>
+    postJson<LiveStatusResponse>('/live/config', { cross_dex_arb_enabled }),
+  liveSetCrossDexMinSpread: (cross_dex_min_spread: number) =>
+    postJson<LiveStatusResponse>('/live/config', { cross_dex_min_spread }),
 };
 
 export function wsUrl(): string {

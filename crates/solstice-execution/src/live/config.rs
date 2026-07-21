@@ -55,6 +55,34 @@ pub struct LiveTradingConfig {
     /// deployed. Adjustable at runtime via
     /// `LiveTradingEngine::set_take_profit_percent`.
     pub take_profit_percent: f64,
+    /// Whether the dedicated cross-DEX arbitrage executor runs at all --
+    /// buy on whichever registered DEX (Jupiter/Raydium/Orca) quotes
+    /// cheapest for a pair, then immediately sell on whichever quotes
+    /// priciest. Off by default: unlike every other trade this engine
+    /// makes, this issues **two separate live transactions** back to
+    /// back with real execution-price risk between them -- nothing in
+    /// this workspace builds a single same-transaction atomic two-leg
+    /// swap (that would require an on-chain program that reads the first
+    /// leg's actual output rather than a pre-computed amount, which
+    /// doesn't exist here). If the second leg fails after the first
+    /// lands, the resulting inventory is tracked as a normal open
+    /// position (protected by `stop_loss_percent`/`take_profit_percent`
+    /// going forward) rather than lost track of -- but the arbitrage
+    /// itself is not risk-free the way the name might suggest. Requires
+    /// an explicit opt-in on top of `LiveTradingEngine::enable()`.
+    /// Adjustable at runtime via
+    /// `LiveTradingEngine::set_cross_dex_arb_enabled`.
+    pub cross_dex_arb_enabled: bool,
+    /// Minimum spread (e.g. `0.015` = 1.5%) between the cheapest and
+    /// priciest quoted price for a pair, across every registered DEX,
+    /// required to attempt a cross-DEX arbitrage trade. Set well above a
+    /// single swap's round-trip cost: two separate swaps each pay their
+    /// own fees and slippage tolerance (unlike a single-DEX trade), so
+    /// this needs more headroom than `SpreadArbitrageStrategy`'s
+    /// much-smaller `min_spread_bps` (which only ever bets directionally
+    /// on one leg, not two). Adjustable at runtime via
+    /// `LiveTradingEngine::set_cross_dex_min_spread`.
+    pub cross_dex_min_spread: f64,
     /// Slippage tolerance passed to Jupiter for both price sampling and
     /// execution quotes. `execute_planned_trade` re-fetches a quote right
     /// before submitting, but `JupiterClient::build_swap_instructions`
@@ -108,6 +136,8 @@ impl Default for LiveTradingConfig {
             default_win_loss_ratio: 2.0,
             stop_loss_percent: 0.1,
             take_profit_percent: 0.05,
+            cross_dex_arb_enabled: false,
+            cross_dex_min_spread: 0.015,
             slippage_bps: 150,
             poll_interval: Duration::from_secs(15),
             tip_lamports: None,

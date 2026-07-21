@@ -6,6 +6,100 @@
 
 ---
 
+## [0.1.0-alpha] - 2026-07-21 (Cross-DEX arbitrage executor)
+
+### Problem
+
+After take-profit, the user asked why the live engine wasn't "just buying
+on Raydium and selling on Orca right away" -- i.e. real cross-DEX
+arbitrage. It wasn't, because nothing implemented that: `SpreadArbitrageStrategy`
+only *detects* a spread and places a single directional `Buy`, betting on
+convergence rather than capturing the gap directly, and execution always
+routes to whichever single DEX quotes best at that instant
+(`get_best_route_with_source`) -- never a deliberate buy-here/sell-there
+pair.
+
+### Design
+
+True atomic arbitrage (buy + sell in one transaction, so a price move
+between legs is impossible) would need an on-chain program that reads the
+first leg's actual output and feeds it into the second leg's input --
+nothing in this workspace has that, and guessing at one for real capital
+was ruled out on the same grounds as the earlier Raydium encoding
+caution. Built the achievable version instead: two separate, sequential,
+real transactions, reusing already-proven primitives rather than
+inventing anything at the instruction level -- `execute_swap` (the same
+function every other live trade goes through), and
+`SolanaRpcClient::get_token_balance` to read the *actual* base-token
+balance delta after the buy leg lands, rather than trusting the buy
+quote's `out_amount` (the two legs aren't atomic, so the real fill can
+differ from what was quoted).
+
+### What was built
+
+`LiveTradingConfig` gained `cross_dex_arb_enabled` (default `false`) and
+`cross_dex_min_spread` (default `0.015`, i.e. 1.5% -- deliberately wider
+than `SpreadArbitrageStrategy`'s much smaller threshold, since two
+separate swaps each pay their own fees/slippage instead of one).
+`LiveTradingEngine` gained:
+
+- `find_arb_opportunity` -- quotes every registered DEX individually for
+  a pair (unlike `sample_market`, keeping the DEX name attached to each
+  price instead of collapsing to an untagged list), returns the
+  cheapest-vs-priciest gap.
+- `evaluate_cross_dex_arbitrage` -- runs each tick, skips any pair with
+  an already-open position (one attempt at a time per pair).
+- `execute_cross_dex_arb` -- buys on the cheap DEX, reads the real
+  balance delta, **registers the bought inventory as a tracked position
+  before attempting the sell leg**, then sells on the pricier DEX. If the
+  sell leg fails after the buy lands, the position stays tracked and
+  protected by stop-loss/take-profit rather than becoming an orphaned
+  wallet balance -- the failure mode is "still holding, still protected,"
+  not "lost track of."
+
+Gated behind its own `set_cross_dex_arb_enabled`/`set_cross_dex_min_spread`
+methods, separate from the main `enable`/`disable` kill switch, since this
+is a materially different risk profile (two non-atomic live transactions
+per opportunity) from every other trade this engine makes. Off by
+default. Wired end to end: new `LiveEvent` variants
+(`CrossDexArbEnabledChanged`, `CrossDexMinSpreadChanged`,
+`CrossDexOpportunityDetected`, `CrossDexArbFilled`, `CrossDexArbFailed`),
+`LiveStatusSnapshot` fields, the `POST /api/v1/live/config` handler, and
+a dedicated dashboard card on `LiveTradingPage.tsx` with its own
+`ENABLE CROSS-DEX ARB` typed-confirmation arm switch (mirroring the main
+kill switch's confirm-phrase pattern), separate from the regular
+max-capital/min-confidence/take-profit controls.
+
+### Verified
+
+`cargo fmt --all`, `cargo clippy --workspace --lib --bins --tests
+--all-features -D warnings`, and `cargo test --workspace` (via
+`--exclude solstice-api` plus `-p solstice-api --lib` separately, the
+established workaround for the running `serve.exe` binary lock) all pass
+clean. `npx tsc --noEmit` in `dashboard/` passes clean. New tests:
+`test_set_cross_dex_arb_enabled_updates_status`,
+`test_set_cross_dex_min_spread_updates_status`,
+`test_evaluate_cross_dex_arbitrage_noop_when_disabled` (confirms no
+network I/O is attempted while disarmed), and
+`test_evaluate_cross_dex_arbitrage_skips_pair_with_open_position`.
+`find_arb_opportunity`/`execute_cross_dex_arb`'s network-dependent paths
+aren't unit-tested directly -- consistent with how `execute_planned_trade`
+itself isn't either in this codebase; only the pure gating/config logic
+is. Verified visually in the browser: the dashboard's new stat tiles,
+min-spread input, and arm/disarm card render correctly against the live
+API, with the existing event feed, kill switch, and other controls
+unaffected.
+
+At the time this landed, the live server was still running the
+pre-take-profit build with a real, tracked $15 SOL/USDC position and live
+trading re-armed by the user. `cross_dex_arb_enabled` defaults to `false`,
+so this feature does nothing until explicitly armed via the dashboard --
+rebuilding/restarting the server to pick up this change (and take-profit,
+still not yet live either) was held pending explicit user confirmation,
+per the established restart safety practice.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20 (Phase 1.2 update)
 
 ### Phase 1.2 - Market Data Ingestion ✅ COMPLETE
