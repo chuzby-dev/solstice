@@ -485,20 +485,26 @@ COMPLETE (live paper trading via 6.3, historical backtesting via 6.1/6.2/6.4).
 - **Gate**: Automated deployment working
 
 **10.3 - Dry Run** (Week 75-77)
-- [ ] Testnet trading — the sign/submit/confirm pipeline exists and is
-  live-verified for its failure paths, but the full happy-path run
-  (devnet airdrop → sign → submit → confirm) hasn't completed in this
-  sandbox: the devnet faucet is IP-rate-limited here (confirmed via direct
-  curl: HTTP 429 "reached your airdrop limit today"). The test
-  (`solstice_blockchain::client::tests::test_sign_submit_confirm_pipeline_on_devnet`,
-  `#[ignore]`d) is ready to run from an unrated-limited IP — see the Phase
-  10 changelog entry
+- [x] Testnet trading ✅ COMPLETE — a real transaction was signed, submitted,
+  and confirmed on Solana devnet. The devnet faucet was IP-rate-limited for
+  this sandbox (confirmed via direct curl: HTTP 429), so the wallet
+  (`CAxwjUEH7XgataKcfihGwzNWswqXsLtVgqpHjVLR9K3f`, devnet-only, zero real
+  value) was funded manually via faucet.solana.com instead; from there
+  `solstice_blockchain::client::tests::test_sign_submit_confirm_pipeline_on_devnet`
+  (via `DEVNET_TEST_KEYPAIR`, reusing the funded wallet instead of
+  requesting a new airdrop) passed for real — see the Phase 10 changelog
+  entry for the transaction signature
 - [x] Mainnet simulation (paper) — this is Phase 6.3/8, already live and
   running
-- [ ] All systems exercised
+- [ ] All systems exercised — devnet proven for a trivial transfer; a real
+  swap end-to-end (Jupiter instructions → sign → submit → confirm) hasn't
+  been run since Jupiter's aggregator doesn't route on devnet (mainnet-only
+  liquidity) — see the Phase 10 changelog entry
 - [ ] Operator training
 - **Dependencies**: 10.2
-- **Gate**: Dry run succeeds — not yet, pending the devnet run above
+- **Gate**: Dry run succeeds ✅ for the sign/submit/confirm pipeline itself;
+  a full real-swap dry run remains open (needs mainnet-facing testing with
+  real, small capital — a 10.4 concern, not 10.3)
 
 **10.4 - Live Deployment** (Week 77-79)
 - [ ] Phased deployment

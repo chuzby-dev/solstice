@@ -470,12 +470,21 @@ mod tests {
     /// The full, previously-never-tested "sign, submit, confirm" pipeline,
     /// run for real against Solana's public devnet -- not mainnet, and not
     /// a real financial asset: devnet SOL is faucet-issued test currency
-    /// with no monetary value, requested fresh for this test and never
-    /// persisted. This is the first time this codebase has ever actually
-    /// submitted a transaction to any network; everything before this was
-    /// either paper-simulated or a read-only RPC call.
+    /// with no monetary value. This is the first time this codebase has
+    /// ever actually submitted a transaction to any network; everything
+    /// before this was either paper-simulated or a read-only RPC call.
+    ///
+    /// Set `DEVNET_TEST_KEYPAIR` to the path of an already-funded keypair
+    /// JSON file (e.g. via `cargo run -p solstice-blockchain --example
+    /// gen_devnet_keypair`, funded manually at faucet.solana.com) to reuse
+    /// it instead of requesting a fresh airdrop -- useful in environments
+    /// where the devnet faucet is IP-rate-limited (confirmed to be the
+    /// case for this project's dev sandbox; this path was verified working
+    /// there: real transaction, real confirmation, see the Phase 10
+    /// changelog entry). With no env var set, a fresh keypair is generated
+    /// and airdropped to, as before.
     #[tokio::test]
-    #[ignore = "requires network access to Solana devnet and its faucet"]
+    #[ignore = "requires network access to Solana devnet (and its faucet, unless DEVNET_TEST_KEYPAIR is set)"]
     async fn test_sign_submit_confirm_pipeline_on_devnet() {
         use solana_sdk::signature::{Keypair, Signer};
         // See the same `#[allow(deprecated)]` rationale in
@@ -487,31 +496,39 @@ mod tests {
 
         const DEVNET_RPC: &str = "https://api.devnet.solana.com";
 
-        // Ephemeral, throwaway keypair -- generated fresh, funded with free
-        // faucet SOL, and discarded when the test ends.
-        let payer = Keypair::new();
+        let payer = if let Ok(path) = std::env::var("DEVNET_TEST_KEYPAIR") {
+            let bytes: Vec<u8> = serde_json::from_str(
+                &std::fs::read_to_string(&path).expect("failed to read DEVNET_TEST_KEYPAIR file"),
+            )
+            .expect("DEVNET_TEST_KEYPAIR file is not a valid JSON byte array");
+            Keypair::try_from(bytes.as_slice()).expect("invalid keypair bytes")
+        } else {
+            // Ephemeral, throwaway keypair -- generated fresh, funded with
+            // free faucet SOL, and discarded when the test ends.
+            let payer = Keypair::new();
 
-        let raw_rpc =
-            solana_client::nonblocking::rpc_client::RpcClient::new(DEVNET_RPC.to_string());
-        let airdrop_sig = raw_rpc
-            .request_airdrop(&payer.pubkey(), 1_000_000_000) // 1 devnet SOL
-            .await
-            .expect("devnet airdrop request failed");
-
-        // Poll for the airdrop itself to land before trying to spend it.
-        let mut airdropped = false;
-        for _ in 0..30 {
-            if raw_rpc
-                .confirm_transaction(&airdrop_sig)
+            let raw_rpc =
+                solana_client::nonblocking::rpc_client::RpcClient::new(DEVNET_RPC.to_string());
+            let airdrop_sig = raw_rpc
+                .request_airdrop(&payer.pubkey(), 1_000_000_000) // 1 devnet SOL
                 .await
-                .unwrap_or(false)
-            {
-                airdropped = true;
-                break;
+                .expect("devnet airdrop request failed");
+
+            let mut airdropped = false;
+            for _ in 0..30 {
+                if raw_rpc
+                    .confirm_transaction(&airdrop_sig)
+                    .await
+                    .unwrap_or(false)
+                {
+                    airdropped = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
             }
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
-        assert!(airdropped, "devnet airdrop did not confirm in time");
+            assert!(airdropped, "devnet airdrop did not confirm in time");
+            payer
+        };
 
         let client = SolanaRpcClient::with_endpoints(vec![DEVNET_RPC.to_string()]).unwrap();
 

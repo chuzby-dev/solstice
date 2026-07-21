@@ -916,6 +916,51 @@ is rate-limited).
 
 ---
 
+## [0.1.0-alpha] - 2026-07-21 (Phase 10.3: devnet dry run actually completed)
+
+### The sign/submit/confirm pipeline, proven live
+
+The previous entry left one thing open: the devnet faucet was
+IP-rate-limited for this sandbox, so `test_sign_submit_confirm_pipeline_on_devnet`
+had never actually run to completion. Worked around, and it now has:
+
+1. Added `cargo run -p solstice-blockchain --example gen_devnet_keypair` —
+   generates a throwaway devnet-only keypair (zero real value) and prints
+   the address plus a ready-to-use `requestAirdrop` curl command.
+2. Generated one: `CAxwjUEH7XgataKcfihGwzNWswqXsLtVgqpHjVLR9K3f`. The
+   sandbox's own airdrop attempts still hit the same `429`, so it was
+   funded manually via the faucet.solana.com web UI instead (10 devnet
+   SOL, confirmed via `getBalance`).
+3. Added `cargo run -p solstice-blockchain --example devnet_dry_run` —
+   loads a keypair file and runs the real pipeline (fetch blockhash → sign
+   a 1-lamport self-transfer → submit → poll for confirmation) against it.
+   **This passed for real**: signature
+   `1cj1mdfjJiy6iS4EhncEQX5qNUggikm6sGs3u2nUch98w6XcbzXR2gJZ3fvkBQAbCWwUQghxC7zhhdqZCWpqhTo`,
+   confirmed at slot 477804109
+   (https://explorer.solana.com/tx/1cj1mdfjJiy6iS4EhncEQX5qNUggikm6sGs3u2nUch98w6XcbzXR2gJZ3fvkBQAbCWwUQghxC7zhhdqZCWpqhTo?cluster=devnet).
+   First real on-chain transaction this codebase has ever submitted.
+4. Extended the actual `#[ignore]`d test itself
+   (`solstice_blockchain::client::tests::test_sign_submit_confirm_pipeline_on_devnet`)
+   to accept `DEVNET_TEST_KEYPAIR` pointing at a pre-funded keypair file,
+   skipping the airdrop step when set. Ran it against the same funded
+   wallet: **passed**. Without the env var it still falls back to
+   requesting a fresh airdrop, for environments where the faucet isn't
+   rate-limited.
+
+**What this does and doesn't prove**: the generic transaction
+sign/submit/confirm pipeline (`TransactionBuilder` +
+`SolanaRpcClient::send_transaction`/`confirm_transaction`) now has a real,
+passing, on-chain proof — not just unit tests against mocked responses.
+It does **not** prove a real swap end-to-end: Jupiter's aggregator only
+routes against mainnet liquidity, so `build_swap_transaction`
+(`solstice-execution::swap`) has been live-verified for instruction
+*fetching* (previous entry) but not for an actual devnet-or-mainnet
+submission — that would need either real mainnet capital or a
+devnet-specific DEX with its own (non-Jupiter) liquidity, neither of which
+this pass attempted.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started
