@@ -12,6 +12,7 @@ pub mod order_manager;
 pub mod planner;
 pub mod position_sizing;
 pub mod risk;
+pub mod swap;
 
 pub use error::{ExecutionError, ExecutionResult};
 pub use order_manager::{Fill, Order, OrderManager, OrderStatus};
@@ -22,6 +23,7 @@ pub use risk::{
     PositionLimits, PreTradeRiskChecker, RiskLimitStatus, RiskLimits, RiskMonitor, StopLossManager,
     StopLossTrigger, TradeApproval,
 };
+pub use swap::{build_swap_transaction, MAX_TRANSACTION_SIZE};
 
 #[cfg(test)]
 mod tests {

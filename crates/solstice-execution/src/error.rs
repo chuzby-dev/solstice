@@ -21,6 +21,9 @@ pub enum ExecutionError {
 
     #[error("DEX error: {0}")]
     Dex(#[from] solstice_dex::DexError),
+
+    #[error("failed to build swap transaction: {0}")]
+    TransactionBuildFailed(String),
 }
 
 pub type ExecutionResult<T> = std::result::Result<T, ExecutionError>;

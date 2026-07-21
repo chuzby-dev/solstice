@@ -19,6 +19,7 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 solana-sdk = { workspace = true }
 solana-client = { workspace = true }
+solana-transaction-status-client-types = "2.3"
 
 [dev-dependencies]
 tokio-test = { workspace = true }

@@ -811,6 +811,111 @@ pass clean — 288 tests total across the workspace (16 new this pass: 6 in
 
 ---
 
+## [0.1.0-alpha] - 2026-07-21 (Phase 10.3 groundwork: sign/submit/confirm pipeline)
+
+### Correction to the Phase 5 entry, and closing the gap it described
+
+The Phase 5 changelog entry claimed "no swap-instruction building exists
+anywhere in this workspace." **That was wrong.** `solstice-dex`'s
+`JupiterClient::build_swap_instructions` (Phase 2.1) already called
+Jupiter's real `/swap-instructions` API and returned genuine, executable
+`Instruction`s — Phase 5 only looked at `Quote`/`RouteSegment` (pricing
+metadata) and missed that the DEX client itself goes further. Recorded here
+rather than silently edited into the old entry, since this changelog is a
+history, not just a status board.
+
+What Phase 5 got right stands: nothing assembled those instructions into an
+actual `Transaction`, signed it, or submitted it anywhere. That gap is what
+this pass closes, plus two real bugs found only by actually running the
+existing Jupiter integration live for the first time.
+
+### New: transaction assembly (`solstice_execution::swap`)
+
+`build_swap_transaction(dex, swap, quote, recent_blockhash, signers) -> Transaction`
+fetches instructions via `DexClient::build_swap_instructions`, assembles
+them with `solstice_blockchain::TransactionBuilder`, signs, and checks the
+*actual serialized size* against Solana's 1232-byte limit before returning
+— rather than building a `VersionedTransaction` with address lookup
+tables, which `DexClient::build_swap_instructions`'s return type
+(`Vec<Instruction>`, no ALT metadata) doesn't have enough information to do
+safely. A caller that hits the size error needs ALT support, which isn't
+built. This isn't a hypothetical edge case: the live SOL/USDC test below
+returned a route that itself needs one ALT.
+
+### New: `SolanaRpcClient::confirm_transaction` (`solstice-blockchain`)
+
+Polls `getSignatureStatuses` until a transaction confirms, fails on-chain,
+or times out, populating the `TransactionConfirmation`/`TransactionStatus`
+types that already existed in `solstice-blockchain::types` but that nothing
+had ever produced from a real RPC call. Paired with the existing
+`send_transaction`, this is the first time this codebase has had a
+complete submit → confirm path.
+
+### Two real bugs found by actually running Jupiter's integration live
+
+Everything in `solstice-dex::jupiter` had unit tests against hand-written
+fixture JSON, but had never been run against the real API until this pass.
+Both bugs were invisible to the fixtures and only surfaced against a real
+response:
+
+1. **Wrong/dead API endpoint.** `api.jup.ag/v6` (the hardcoded default) is
+   unreachable from this sandbox and is, independently, now Jupiter's paid
+   tier — free access moved to `lite-api.jup.ag/swap/v1` (same
+   request/response shape, confirmed via direct `curl` and then via the
+   live test below). `JupiterClient::DEFAULT_API_BASE` now points there.
+2. **The "raw quote" being forwarded to `/swap-instructions` was
+   incomplete.** `JupiterQuoteResponse` used `#[serde(flatten)]` on a
+   `raw: serde_json::Value` field, intending it to hold the complete
+   original response so it could be sent back verbatim. Flatten doesn't
+   work that way — it only captures whatever's *left over* after the named
+   fields (`inAmount`, `outAmount`, `routePlan`, ...) consume their keys,
+   so `raw` was silently missing exactly the fields `/swap-instructions`
+   needs back. Every existing unit test passed anyway, because the
+   hand-written fixtures never round-tripped through a real second
+   request. The real API returned a clear `422` — `missing field
+   'inAmount'` — the first time this was actually tried. Fixed by
+   deserializing `fields` and `raw` **separately** from the same JSON
+   (`JupiterQuoteFields` for the typed parts, a second untouched
+   `serde_json::Value` for `raw`), so `raw` is genuinely the complete
+   document. Also found and fixed in passing: the live API doesn't always
+   include `routePlan[].swapInfo.feeAmount`, which the parser previously
+   required unconditionally (`#[serde(default)]` added).
+
+### Devnet dry run: written and unit-tested, blocked on a rate limit
+
+Added `test_sign_submit_confirm_pipeline_on_devnet` (`#[ignore]`d,
+`solstice-blockchain`): generates a throwaway `Keypair` (devnet-only, never
+persisted — devnet SOL is free faucet-issued test currency with no
+monetary value, not a real financial asset), requests an airdrop, signs and
+submits a trivial 1-lamport self-transfer, and confirms it landed. This
+would be the first time this codebase ever actually submits a transaction
+to any network — everything before this was either paper-simulated or a
+read-only RPC call.
+
+**It hasn't completed successfully in this sandbox**: `https://api.devnet.solana.com`'s
+airdrop faucet returns `429 "reached your airdrop limit today"` for this
+environment's outbound IP (confirmed directly via `curl`, and via the
+public web faucet at faucet.solana.com, which shares the same underlying
+limit). This is an external rate limit, not a code defect — the test's
+logic is sound and its failure-path sibling
+(`test_confirm_transaction_times_out_when_unreachable`) does pass. Whoever
+runs this from a non-rate-limited IP (i.e., not this shared sandbox) should
+see it pass; that's the remaining step to actually close Phase 10.3's
+"Testnet trading" checkbox.
+
+### Verified end to end
+
+`cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features
+-D warnings`, and `cargo test --workspace` all pass clean — 306 tests
+total across the workspace (passed + explicitly-`#[ignore]`d live tests),
+zero failures. Two live calls confirmed working end to end: `JupiterClient`
+fetching a real SOL/USDC quote and real swap instructions from
+`lite-api.jup.ag` (not `#[ignore]`d test data — an actual passing live
+test), and the devnet RPC endpoint itself being reachable (only the faucet
+is rate-limited).
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started

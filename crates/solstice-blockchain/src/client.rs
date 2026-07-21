@@ -2,12 +2,16 @@
 
 use crate::accounts::{AccountInfo, BatchAccountResult};
 use crate::error::{BlockchainError, BlockchainResult};
-use crate::types::{EndpointHealth, RpcClientConfig, RpcEndpointConfig};
+use crate::types::{
+    EndpointHealth, RpcClientConfig, RpcEndpointConfig, TransactionConfirmation, TransactionStatus,
+};
+use chrono::Utc;
 use solana_client::nonblocking::rpc_client::RpcClient as NonblockingRpcClient;
 use solana_sdk::hash::Hash;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use solana_sdk::transaction::Transaction;
+use solana_transaction_status_client_types::TransactionConfirmationStatus as SolanaConfirmationStatus;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -285,8 +289,7 @@ impl SolanaRpcClient {
     /// Submit a signed transaction, trying each endpoint in priority order
     /// until one accepts it or all fail. This only submits the transaction
     /// — it does not wait for confirmation; callers that need that should
-    /// poll `getSignatureStatuses` (not yet wrapped here) against the
-    /// returned signature.
+    /// follow up with [`Self::confirm_transaction`].
     pub async fn send_transaction(&self, transaction: &Transaction) -> BlockchainResult<Signature> {
         let max_attempts = self.config.max_retries.max(1);
         let mut last_error: Option<String> = None;
@@ -313,6 +316,76 @@ impl SolanaRpcClient {
         Err(BlockchainError::TransactionFailed(
             last_error.unwrap_or_else(|| "all RPC attempts failed".to_string()),
         ))
+    }
+
+    /// Poll `getSignatureStatuses` for `signature` until it confirms, fails
+    /// on-chain, or `timeout` elapses. Populates the pre-existing
+    /// [`TransactionConfirmation`]/[`TransactionStatus`] types, which
+    /// nothing previously produced from a real RPC call.
+    pub async fn confirm_transaction(
+        &self,
+        signature: &Signature,
+        timeout: Duration,
+        poll_interval: Duration,
+    ) -> BlockchainResult<TransactionConfirmation> {
+        let deadline = Instant::now() + timeout;
+
+        loop {
+            let endpoint = self.get_active_endpoint()?;
+            let rpc = self.build_rpc_client(&endpoint);
+
+            match rpc
+                .get_signature_statuses(std::slice::from_ref(signature))
+                .await
+            {
+                Ok(response) => {
+                    self.record_success(&endpoint, 0.0)?;
+                    if let Some(Some(status)) = response.value.into_iter().next() {
+                        if let Some(err) = status.err {
+                            return Ok(TransactionConfirmation {
+                                signature: *signature,
+                                status: TransactionStatus::Failed,
+                                slot: Some(status.slot),
+                                error: Some(err.to_string()),
+                                timestamp: Utc::now(),
+                            });
+                        }
+
+                        let is_finalized = matches!(
+                            status.confirmation_status,
+                            Some(SolanaConfirmationStatus::Finalized)
+                        );
+                        let is_confirmed = is_finalized
+                            || matches!(
+                                status.confirmation_status,
+                                Some(SolanaConfirmationStatus::Confirmed)
+                            );
+
+                        if is_confirmed {
+                            return Ok(TransactionConfirmation {
+                                signature: *signature,
+                                status: if is_finalized {
+                                    TransactionStatus::Finalized
+                                } else {
+                                    TransactionStatus::Confirmed
+                                },
+                                slot: Some(status.slot),
+                                error: None,
+                                timestamp: Utc::now(),
+                            });
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.record_error(&endpoint, e.to_string())?;
+                }
+            }
+
+            if Instant::now() >= deadline {
+                return Err(BlockchainError::TransactionTimeout);
+            }
+            tokio::time::sleep(poll_interval).await;
+        }
     }
 }
 
@@ -378,6 +451,92 @@ mod tests {
         let transaction = Transaction::new_unsigned(solana_sdk::message::Message::default());
         let result = client.send_transaction(&transaction).await;
         assert!(matches!(result, Err(BlockchainError::TransactionFailed(_))));
+    }
+
+    #[tokio::test]
+    async fn test_confirm_transaction_times_out_when_unreachable() {
+        let client =
+            SolanaRpcClient::with_endpoints(vec!["http://127.0.0.1:1".to_string()]).unwrap();
+        let result = client
+            .confirm_transaction(
+                &Signature::default(),
+                Duration::from_millis(50),
+                Duration::from_millis(10),
+            )
+            .await;
+        assert!(matches!(result, Err(BlockchainError::TransactionTimeout)));
+    }
+
+    /// The full, previously-never-tested "sign, submit, confirm" pipeline,
+    /// run for real against Solana's public devnet -- not mainnet, and not
+    /// a real financial asset: devnet SOL is faucet-issued test currency
+    /// with no monetary value, requested fresh for this test and never
+    /// persisted. This is the first time this codebase has ever actually
+    /// submitted a transaction to any network; everything before this was
+    /// either paper-simulated or a read-only RPC call.
+    #[tokio::test]
+    #[ignore = "requires network access to Solana devnet and its faucet"]
+    async fn test_sign_submit_confirm_pipeline_on_devnet() {
+        use solana_sdk::signature::{Keypair, Signer};
+        // See the same `#[allow(deprecated)]` rationale in
+        // `solstice-execution::jito::tip`: solana-sdk 2.x still ships this,
+        // and pulling in `solana-system-interface` for one call isn't
+        // worth it here.
+        #[allow(deprecated)]
+        use solana_sdk::system_instruction;
+
+        const DEVNET_RPC: &str = "https://api.devnet.solana.com";
+
+        // Ephemeral, throwaway keypair -- generated fresh, funded with free
+        // faucet SOL, and discarded when the test ends.
+        let payer = Keypair::new();
+
+        let raw_rpc =
+            solana_client::nonblocking::rpc_client::RpcClient::new(DEVNET_RPC.to_string());
+        let airdrop_sig = raw_rpc
+            .request_airdrop(&payer.pubkey(), 1_000_000_000) // 1 devnet SOL
+            .await
+            .expect("devnet airdrop request failed");
+
+        // Poll for the airdrop itself to land before trying to spend it.
+        let mut airdropped = false;
+        for _ in 0..30 {
+            if raw_rpc
+                .confirm_transaction(&airdrop_sig)
+                .await
+                .unwrap_or(false)
+            {
+                airdropped = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        assert!(airdropped, "devnet airdrop did not confirm in time");
+
+        let client = SolanaRpcClient::with_endpoints(vec![DEVNET_RPC.to_string()]).unwrap();
+
+        // A harmless self-transfer of 1 lamport -- proves the sign/submit
+        // pipeline works without needing any real swap or DEX involved.
+        let instruction = system_instruction::transfer(&payer.pubkey(), &payer.pubkey(), 1);
+        let blockhash = client.get_latest_blockhash().await.unwrap();
+        let transaction = crate::transaction::TransactionBuilder::new()
+            .payer(payer.pubkey())
+            .add_instruction(instruction)
+            .build_and_sign(blockhash.to_bytes(), &[&payer])
+            .unwrap();
+
+        let signature = client.send_transaction(&transaction).await.unwrap();
+
+        let confirmation = client
+            .confirm_transaction(&signature, Duration::from_secs(30), Duration::from_secs(2))
+            .await
+            .unwrap();
+
+        assert!(
+            confirmation.is_confirmed(),
+            "transaction did not confirm: {confirmation:?}"
+        );
+        assert!(!confirmation.is_failed());
     }
 
     #[test]

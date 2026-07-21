@@ -485,12 +485,20 @@ COMPLETE (live paper trading via 6.3, historical backtesting via 6.1/6.2/6.4).
 - **Gate**: Automated deployment working
 
 **10.3 - Dry Run** (Week 75-77)
-- [ ] Testnet trading
-- [ ] Mainnet simulation (paper)
+- [ ] Testnet trading — the sign/submit/confirm pipeline exists and is
+  live-verified for its failure paths, but the full happy-path run
+  (devnet airdrop → sign → submit → confirm) hasn't completed in this
+  sandbox: the devnet faucet is IP-rate-limited here (confirmed via direct
+  curl: HTTP 429 "reached your airdrop limit today"). The test
+  (`solstice_blockchain::client::tests::test_sign_submit_confirm_pipeline_on_devnet`,
+  `#[ignore]`d) is ready to run from an unrated-limited IP — see the Phase
+  10 changelog entry
+- [x] Mainnet simulation (paper) — this is Phase 6.3/8, already live and
+  running
 - [ ] All systems exercised
 - [ ] Operator training
 - **Dependencies**: 10.2
-- **Gate**: Dry run succeeds
+- **Gate**: Dry run succeeds — not yet, pending the devnet run above
 
 **10.4 - Live Deployment** (Week 77-79)
 - [ ] Phased deployment

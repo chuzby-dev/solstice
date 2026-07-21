@@ -19,7 +19,11 @@ use tracing::warn;
 /// ultimately execute through).
 pub const JUPITER_PROGRAM_ID: &str = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
 
-const DEFAULT_API_BASE: &str = "https://api.jup.ag/v6";
+// Jupiter's v6 API (`api.jup.ag/v6`) is now a paid tier and unreachable
+// without an API key; `lite-api.jup.ag/swap/v1` is the current free public
+// endpoint (same request/response shape, verified live). See the Phase 10
+// changelog entry for how this was found and confirmed.
+const DEFAULT_API_BASE: &str = "https://lite-api.jup.ag/swap/v1";
 
 pub struct JupiterClient {
     http: reqwest::Client,
@@ -66,13 +70,17 @@ impl JupiterClient {
             });
         }
 
-        response
-            .json::<JupiterQuoteResponse>()
-            .await
-            .map_err(|e| DexError::ParseError {
+        let raw: serde_json::Value = response.json().await.map_err(|e| DexError::ParseError {
+            dex: "Jupiter".to_string(),
+            message: e.to_string(),
+        })?;
+        let fields: JupiterQuoteFields =
+            serde_json::from_value(raw.clone()).map_err(|e| DexError::ParseError {
                 dex: "Jupiter".to_string(),
                 message: e.to_string(),
-            })
+            })?;
+
+        Ok(JupiterQuoteResponse { fields, raw })
     }
 }
 
@@ -171,11 +179,13 @@ impl DexClient for JupiterClient {
                     let Ok(response) = http.get(&url).send().await else {
                         continue;
                     };
-                    let Ok(parsed) = response.json::<JupiterQuoteResponse>().await else {
+                    let Ok(fields) = response.json::<JupiterQuoteFields>().await else {
                         continue;
                     };
-                    let (Ok(in_amount), Ok(out_amount)) = (parsed.in_amount(), parsed.out_amount())
-                    else {
+                    let (Ok(in_amount), Ok(out_amount)) = (
+                        fields.in_amount.parse::<u64>(),
+                        fields.out_amount.parse::<u64>(),
+                    ) else {
                         continue;
                     };
                     if in_amount == 0 {
@@ -224,15 +234,16 @@ struct JupiterSwapInfo {
     in_amount: String,
     #[serde(rename = "outAmount")]
     out_amount: String,
-    #[serde(rename = "feeAmount")]
+    // The live API doesn't always include this field (verified against
+    // real responses); default to empty rather than hard-failing
+    // deserialization, matching the `.unwrap_or(0)` handling below.
+    #[serde(rename = "feeAmount", default)]
     fee_amount: String,
 }
 
-/// Raw Jupiter `/quote` response. Kept alongside the parsed fields so it can
-/// be forwarded verbatim to `/swap-instructions`, which expects the exact
-/// object `/quote` returned.
+/// The subset of a Jupiter `/quote` response this client actually reads.
 #[derive(Debug, Clone, Deserialize)]
-struct JupiterQuoteResponse {
+struct JupiterQuoteFields {
     #[serde(rename = "inAmount")]
     in_amount: String,
     #[serde(rename = "outAmount")]
@@ -241,34 +252,55 @@ struct JupiterQuoteResponse {
     price_impact_pct: String,
     #[serde(rename = "routePlan")]
     route_plan: Vec<JupiterRoutePlanStep>,
+}
 
-    #[serde(flatten)]
+/// A parsed Jupiter `/quote` response, paired with the complete, unmodified
+/// JSON body Jupiter returned.
+///
+/// The `raw` value is deserialized **separately** from `fields` (not via
+/// `#[serde(flatten)]` on one struct) deliberately: flatten only captures
+/// whatever's left over after the named fields consume their keys, so a
+/// flattened `raw` would be missing exactly `inAmount`/`outAmount`/
+/// `routePlan`/etc — which is exactly what `/swap-instructions` needs back,
+/// verbatim, to build real instructions. Confirmed live: the flattened
+/// version passed all unit tests (hand-written fixtures don't expose the
+/// bug) but failed a real `/swap-instructions` call with "missing field
+/// `inAmount`" — see the Phase 10 changelog entry.
+#[derive(Debug, Clone)]
+struct JupiterQuoteResponse {
+    fields: JupiterQuoteFields,
     raw: serde_json::Value,
 }
 
 impl JupiterQuoteResponse {
     fn in_amount(&self) -> DexResult<u64> {
-        self.in_amount.parse().map_err(|_| DexError::ParseError {
-            dex: "Jupiter".to_string(),
-            message: format!("invalid inAmount: {}", self.in_amount),
-        })
+        self.fields
+            .in_amount
+            .parse()
+            .map_err(|_| DexError::ParseError {
+                dex: "Jupiter".to_string(),
+                message: format!("invalid inAmount: {}", self.fields.in_amount),
+            })
     }
 
     fn out_amount(&self) -> DexResult<u64> {
-        self.out_amount.parse().map_err(|_| DexError::ParseError {
-            dex: "Jupiter".to_string(),
-            message: format!("invalid outAmount: {}", self.out_amount),
-        })
+        self.fields
+            .out_amount
+            .parse()
+            .map_err(|_| DexError::ParseError {
+                dex: "Jupiter".to_string(),
+                message: format!("invalid outAmount: {}", self.fields.out_amount),
+            })
     }
 
     fn into_quote(self) -> DexResult<Quote> {
         let in_amount = self.in_amount()?;
         let out_amount = self.out_amount()?;
-        let price_impact: f64 = self.price_impact_pct.parse().unwrap_or(0.0);
+        let price_impact: f64 = self.fields.price_impact_pct.parse().unwrap_or(0.0);
 
-        let mut route = Vec::with_capacity(self.route_plan.len());
+        let mut route = Vec::with_capacity(self.fields.route_plan.len());
         let mut fee_amount: u64 = 0;
-        for step in &self.route_plan {
+        for step in &self.fields.route_plan {
             let input_mint =
                 Pubkey::from_str(&step.swap_info.input_mint).map_err(|_| DexError::ParseError {
                     dex: "Jupiter".to_string(),
@@ -450,9 +482,21 @@ mod tests {
         })
     }
 
+    /// Mirrors `JupiterClient::fetch_quote`'s two-step parse: `fields` and
+    /// `raw` deserialized separately from the same JSON, not via
+    /// `#[serde(flatten)]` (see `JupiterQuoteResponse`'s doc comment for why).
+    fn parse_quote_response(json: serde_json::Value) -> DexResult<JupiterQuoteResponse> {
+        let fields: JupiterQuoteFields =
+            serde_json::from_value(json.clone()).map_err(|e| DexError::ParseError {
+                dex: "Jupiter".to_string(),
+                message: e.to_string(),
+            })?;
+        Ok(JupiterQuoteResponse { fields, raw: json })
+    }
+
     #[test]
     fn test_parse_quote_response() {
-        let response: JupiterQuoteResponse = serde_json::from_value(sample_quote_json()).unwrap();
+        let response = parse_quote_response(sample_quote_json()).unwrap();
         let quote = response.into_quote().unwrap();
 
         assert_eq!(quote.in_amount, 1_000_000);
@@ -465,7 +509,7 @@ mod tests {
 
     #[test]
     fn test_parse_quote_response_fee_bps() {
-        let response: JupiterQuoteResponse = serde_json::from_value(sample_quote_json()).unwrap();
+        let response = parse_quote_response(sample_quote_json()).unwrap();
         let quote = response.into_quote().unwrap();
 
         // 2500 / 1_000_000 * 10_000 = 25 bps
@@ -473,10 +517,34 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_quote_response_raw_is_complete() {
+        // The whole point of not using `#[serde(flatten)]`: `raw` must
+        // still contain the fields the named struct also parsed, since
+        // `/swap-instructions` needs them back verbatim.
+        let response = parse_quote_response(sample_quote_json()).unwrap();
+        assert_eq!(response.raw["inAmount"], "1000000");
+        assert_eq!(response.raw["outAmount"], "50000000");
+        assert!(response.raw["routePlan"].is_array());
+    }
+
+    #[test]
+    fn test_parse_quote_response_missing_fee_amount_defaults() {
+        let mut json = sample_quote_json();
+        json["routePlan"][0]["swapInfo"]
+            .as_object_mut()
+            .unwrap()
+            .remove("feeAmount");
+
+        let response = parse_quote_response(json).unwrap();
+        let quote = response.into_quote().unwrap();
+        assert_eq!(quote.fee_amount, 0);
+    }
+
+    #[test]
     fn test_parse_quote_response_invalid_mint() {
         let mut json = sample_quote_json();
         json["routePlan"][0]["swapInfo"]["inputMint"] = serde_json::json!("not-a-pubkey");
-        let response: JupiterQuoteResponse = serde_json::from_value(json).unwrap();
+        let response = parse_quote_response(json).unwrap();
 
         assert!(response.into_quote().is_err());
     }
@@ -514,5 +582,52 @@ mod tests {
         let client = JupiterClient::new().unwrap();
         assert_eq!(client.protocol_name(), "Jupiter");
         assert_eq!(client.program_id().to_string(), JUPITER_PROGRAM_ID);
+    }
+
+    /// Read-only: fetches a real quote and real swap instructions from
+    /// Jupiter's live mainnet API for SOL/USDC. Never signs or submits
+    /// anything, so there's no funds risk -- the payer pubkey is random
+    /// and doesn't need to hold anything for Jupiter to return instructions
+    /// referencing it. This is the first live verification that
+    /// `build_swap_instructions` actually round-trips against the real API
+    /// rather than just parsing a hand-written fixture.
+    #[tokio::test]
+    #[ignore = "requires live network access to Jupiter's API"]
+    async fn test_get_quote_and_build_swap_instructions_live() {
+        const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+        const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+        let client = JupiterClient::new().unwrap();
+        let sol = Pubkey::from_str(SOL_MINT).unwrap();
+        let usdc = Pubkey::from_str(USDC_MINT).unwrap();
+
+        let quote_request = QuoteRequest::new(sol, usdc, 1_000_000_000, 50); // 1 SOL
+        let quote = client.get_quote(&quote_request).await.unwrap();
+        assert!(quote.out_amount > 0);
+        assert!(!quote.route.is_empty());
+
+        let payer = Pubkey::new_unique();
+        let swap = SwapRequest {
+            input_mint: sol,
+            output_mint: usdc,
+            amount: 1_000_000_000,
+            payer,
+            slippage_bps: 50,
+        };
+        let instructions = client.build_swap_instructions(&swap, &quote).await.unwrap();
+
+        // A real response is several instructions: compute budget (no
+        // accounts, just program id + data -- legitimately empty),
+        // possibly a System Program setup step (program id
+        // `Pubkey::default()` -- also legitimate), and the actual swap
+        // instruction routed through Jupiter's own program. That last one
+        // is the meaningful sanity check that this is a genuine response.
+        assert!(instructions.len() > 1);
+        assert!(
+            instructions
+                .iter()
+                .any(|ix| &ix.program_id == client.program_id()),
+            "expected at least one instruction to route through Jupiter's own program"
+        );
     }
 }
