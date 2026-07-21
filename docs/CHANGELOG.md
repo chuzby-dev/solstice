@@ -748,6 +748,69 @@ user would have to supply; not something to fabricate or attempt here.
 
 ---
 
+## [0.1.0-alpha] - 2026-07-21 (Phase 9.1/9.2)
+
+### Phase 9.1 - Unit Tests ✅ (targeted, not exhaustive), 9.2 - Integration Tests ✅ (targeted, not exhaustive)
+
+No coverage tool run — `cargo tarpaulin` doesn't support Windows well and
+wasn't installed in this sandbox — so instead of chasing an 80% number
+without a way to measure it, this pass did a manual audit (grep every
+non-trivial source file for `#[test]`/`#[tokio::test]`) to find the
+highest-risk *untested* code, and closed the worst gaps found rather than
+padding coverage on code that already had it.
+
+**Two real gaps, both closed**:
+
+1. **`PaperTradingEngine` had zero tests.** `crates/solstice-simulation/src/engine.rs`
+   (564 lines) is the actual live paper-trading logic — the same code this
+   session watched fill a real $1,000 SOL order earlier today — and had
+   never been unit-tested at all. `act_on_signal`, `evaluate_stop_losses`,
+   and `portfolio_snapshot` are callable directly without touching the
+   network (only `sample_market`/`tick`'s DEX-quoting does I/O), so 6 new
+   tests exercise them directly: opening a position and debiting cash,
+   the position-size-cap rejecting a second fill on top of an already-near-cap
+   position, a no-price signal being a safe no-op, a losing position
+   actually getting closed by the stop-loss check (with negative realized
+   P&L), and the snapshot's total-value math.
+
+2. **`solstice-api` had zero integration tests.** Every REST handler and
+   the WebSocket endpoint were entirely unverified beyond manual `curl`
+   sessions during Phase 7/8 development. New `crates/solstice-api/tests/integration_tests.rs`
+   (6 tests) drives the *real* `ApiServer` router — added a small
+   `ApiServer::router()` accessor for this — against a real, in-memory
+   `PaperTradingEngine` (no live network: the test engine registers no
+   Raydium/Orca pools, so `tick()` never reaches out to a DEX). REST
+   endpoints are tested via `tower::ServiceExt::oneshot`; the WebSocket
+   endpoint needed a real bound `TcpListener` and a real `tokio-tungstenite`
+   client instead, since `oneshot` can't exercise a protocol upgrade — that
+   test calls `engine.tick()` and asserts a real `TickCompleted` JSON frame
+   arrives over the actual socket.
+
+**Also added**: failure-path tests for the new
+`SolanaRpcClient::send_transaction`/`get_latest_blockhash` (Phase 5) against
+an unreachable endpoint (connection-refused on `127.0.0.1:1`, so they fail
+in milliseconds rather than waiting out a timeout) confirming they return a
+typed error instead of hanging or panicking, plus a live `#[ignore]`d
+`get_latest_blockhash` test against real mainnet (same convention as the
+existing `get_account_live` test) — run explicitly and confirmed passing.
+`ApiError`/`error.rs` (previously completely untested, and in fact never
+even constructed by any handler) got two tests of its own.
+
+**Not attempted**: 9.1's 80%+ coverage *claim* (no tool to measure it
+against, see above); 9.2's "recovery procedures" (needs a live RPC/DB to
+actually fail and recover against, which isn't running in this sandbox);
+9.3 chaos testing and 9.4 performance/load testing (both need live
+infrastructure — Postgres, Redis, RPC nodes under load — this sandbox
+doesn't have). Left unchecked in `ROADMAP.md` rather than claimed done.
+
+**Verified end to end**: `cargo fmt --check`, `cargo clippy --workspace
+--all-targets --all-features -D warnings`, and `cargo test --workspace` all
+pass clean — 288 tests total across the workspace (16 new this pass: 6 in
+`solstice-simulation`, 8 in `solstice-api` (2 unit + 6 integration), 2 in
+`solstice-blockchain`), zero failures.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started

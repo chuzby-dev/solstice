@@ -26,6 +26,13 @@ dotenvy = "0.15"
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+solstice-blockchain = { path = "../solstice-blockchain" }
+solstice-dex = { path = "../solstice-dex" }
+solstice-strategy = { path = "../solstice-strategy" }
+solana-sdk = { workspace = true }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+tokio-tungstenite = "0.24"
 
 [[bin]]
 name = "serve"

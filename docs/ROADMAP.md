@@ -406,19 +406,41 @@ COMPLETE (live paper trading via 6.3, historical backtesting via 6.1/6.2/6.4).
 ### Milestones
 
 **9.1 - Unit Tests** (Week 62-64)
-- [ ] 80%+ code coverage
-- [ ] Critical path tests
-- [ ] Edge case tests
+- [ ] 80%+ code coverage (no coverage tool run — `cargo tarpaulin` doesn't
+  support Windows well and wasn't installed; coverage was audited manually
+  by grepping every non-trivial source file for `#[test]`/`#[tokio::test]`
+  instead, see gate note)
+- [x] Critical path tests — closed the worst gap found: `PaperTradingEngine`
+  (`crates/solstice-simulation/src/engine.rs`, 564 lines — the actual live
+  paper-trading logic this session watched fill a real order earlier) had
+  **zero tests** before this pass. 6 new tests now exercise `act_on_signal`
+  (opens a position, debits cash, respects the position cap, no-ops with no
+  price), stop-loss closing, and portfolio snapshot math — all directly,
+  with no live network needed.
+- [x] Edge case tests — position-cap-exceeded, no-price signal, losing
+  position past the stop-loss threshold
 - **Dependencies**: All previous
-- **Gate**: Unit tests comprehensive
+- **Gate**: Unit tests comprehensive for the highest-risk gaps found; not
+  claiming 80%+ coverage without having actually measured it — see above
 
 **9.2 - Integration Tests** (Week 64-66)
-- [ ] Multi-crate tests
-- [ ] E2E workflows
-- [ ] Failure scenarios
-- [ ] Recovery procedures
+- [x] Multi-crate tests — `solstice-api` (REST handlers + a real WebSocket
+  connection driven through a real `PaperTradingEngine`) had **zero**
+  integration tests before this pass; now has 6, using the real Axum
+  router (`tower::ServiceExt::oneshot` for REST, a real bound TCP listener
+  + `tokio-tungstenite` client for the WS upgrade, since `oneshot` can't
+  exercise a protocol upgrade)
+- [x] E2E workflows — status/positions/trades/performance against a live
+  in-memory engine state, and a WebSocket client actually receiving a
+  `TickCompleted` event emitted by `engine.tick()`
+- [x] Failure scenarios — unreachable-RPC-endpoint tests added for the new
+  `SolanaRpcClient::send_transaction`/`get_latest_blockhash` (fail cleanly
+  with a typed error, don't hang or panic); unknown-route 404
+- [ ] Recovery procedures — not built; would need a live RPC/DB to fail
+  and recover against, which this sandbox doesn't have running
 - **Dependencies**: 9.1
-- **Gate**: Integration tests pass
+- **Gate**: Integration tests pass — the ones that exist do (all pass in
+  `cargo test --workspace`); recovery-procedure tests remain future work
 
 **9.3 - Chaos Testing** (Week 66-68)
 - [ ] Network failure simulation

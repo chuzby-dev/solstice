@@ -33,6 +33,14 @@ impl ApiServer {
         ApiServer { router, addr }
     }
 
+    /// The underlying Axum router, for embedding into a larger app or for
+    /// tests that want to drive requests without binding a real socket
+    /// (e.g. via `tower::ServiceExt::oneshot`). `Router` is cheaply
+    /// cloneable (internally `Arc`-backed).
+    pub fn router(&self) -> Router {
+        self.router.clone()
+    }
+
     /// Bind and serve until the process is terminated.
     pub async fn start(self) -> std::io::Result<()> {
         let listener = tokio::net::TcpListener::bind(self.addr).await?;

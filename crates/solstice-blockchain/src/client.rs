@@ -348,6 +348,38 @@ mod tests {
         assert_eq!(account.address, system_program);
     }
 
+    #[tokio::test]
+    #[ignore = "requires a live, reachable Solana RPC endpoint"]
+    async fn test_get_latest_blockhash_live() {
+        let client =
+            SolanaRpcClient::with_endpoints(
+                vec!["https://api.mainnet-beta.solana.com".to_string()],
+            )
+            .unwrap();
+
+        let hash = client.get_latest_blockhash().await.unwrap();
+        assert_ne!(hash, Hash::default());
+    }
+
+    #[tokio::test]
+    async fn test_get_latest_blockhash_fails_cleanly_when_unreachable() {
+        // Nothing listens on port 1, so this fails fast (connection
+        // refused) rather than waiting out a real timeout.
+        let client =
+            SolanaRpcClient::with_endpoints(vec!["http://127.0.0.1:1".to_string()]).unwrap();
+        let result = client.get_latest_blockhash().await;
+        assert!(matches!(result, Err(BlockchainError::RpcError(_))));
+    }
+
+    #[tokio::test]
+    async fn test_send_transaction_fails_cleanly_when_unreachable() {
+        let client =
+            SolanaRpcClient::with_endpoints(vec!["http://127.0.0.1:1".to_string()]).unwrap();
+        let transaction = Transaction::new_unsigned(solana_sdk::message::Message::default());
+        let result = client.send_transaction(&transaction).await;
+        assert!(matches!(result, Err(BlockchainError::TransactionFailed(_))));
+    }
+
     #[test]
     fn test_client_creation() {
         let config = RpcClientConfig {

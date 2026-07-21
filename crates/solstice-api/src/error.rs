@@ -28,3 +28,20 @@ impl IntoResponse for ApiError {
 }
 
 pub type ApiResult<T> = std::result::Result<T, ApiError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_not_found_maps_to_404() {
+        let response = ApiError::NotFound("order abc123".to_string()).into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_not_found_body_carries_message() {
+        let err = ApiError::NotFound("order abc123".to_string());
+        assert_eq!(err.to_string(), "not found: order abc123");
+    }
+}

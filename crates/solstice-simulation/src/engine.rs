@@ -562,3 +562,225 @@ impl PaperTradingEngine {
             });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solstice_execution::risk::{
+        ConcentrationLimits, DailyLossLimits, ExposureLimits, OrderLimits, PositionLimits,
+    };
+    use solstice_strategy::StrategyConfig;
+    use std::str::FromStr;
+
+    fn test_risk_limits() -> RiskLimits {
+        RiskLimits {
+            position: PositionLimits {
+                max_single_position_usd: 5_000,
+                max_position_percent: 0.5,
+                min_position_size_usd: 10,
+                max_open_positions: 10,
+            },
+            daily_loss: DailyLossLimits {
+                max_daily_loss_usd: 1_000_000,
+                max_daily_loss_percent: 1.0,
+            },
+            exposure: ExposureLimits {
+                max_total_exposure_usd: 1_000_000,
+                max_leverage: 10.0,
+            },
+            concentration: ConcentrationLimits {
+                max_single_asset_percent: 1.0,
+            },
+            order: OrderLimits {
+                max_order_size_usd: 50_000,
+                max_slippage_percent: 0.5,
+            },
+        }
+    }
+
+    /// No pools are registered, so `sample_market`/`tick` would never make
+    /// a network call -- but these tests drive `act_on_signal` and the
+    /// stop-loss/position helpers directly, which never touch the network
+    /// regardless.
+    fn test_engine(stop_loss_percent: f64) -> PaperTradingEngine {
+        let rpc = Arc::new(
+            solstice_blockchain::SolanaRpcClient::with_endpoints(vec![
+                "http://127.0.0.1:1".to_string()
+            ])
+            .unwrap(),
+        );
+        let raydium = Arc::new(solstice_dex::RaydiumClient::new(rpc.clone()));
+        let orca = Arc::new(solstice_dex::OrcaClient::new(rpc));
+        let strategy_manager = Arc::new(StrategyManager::new(StrategyConfig::default()));
+        let pair = test_pair();
+
+        let monitored = MonitoredPair {
+            pair,
+            label: "TEST/USDC",
+            raydium_pool: None,
+            orca_pool: None,
+            reference_amount: 1_000_000_000,
+        };
+
+        let config = PaperTradingConfig {
+            poll_interval: Duration::from_secs(3600),
+            initial_capital_usd: 10_000.0,
+            risk_limits: test_risk_limits(),
+            kelly_fraction: 0.5,
+            default_win_loss_ratio: 2.0,
+            stop_loss_percent,
+        };
+
+        PaperTradingEngine::new(raydium, orca, strategy_manager, vec![monitored], config)
+    }
+
+    fn test_pair() -> TokenPair {
+        // Fixed, not random: `test_engine`'s `MonitoredPair` and each
+        // test's snapshot/signal need to agree on the same pair.
+        TokenPair::new(
+            Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap(),
+            Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap(),
+        )
+    }
+
+    fn snapshot_with_price(pair: TokenPair, price: f64) -> MarketSnapshot {
+        let mut snapshot = MarketSnapshot::new(0);
+        snapshot.prices.insert(
+            pair,
+            vec![solstice_core::types::Price::new(price, pair, 0.9)],
+        );
+        snapshot
+    }
+
+    fn buy_signal(pair: TokenPair, confidence: f64) -> Signal {
+        Signal::new("Test".to_string(), SignalType::Buy { pair }, confidence)
+    }
+
+    #[tokio::test]
+    async fn test_act_on_signal_opens_a_position_and_debits_cash() {
+        let engine = test_engine(0.1);
+        let pair = test_pair();
+        let snapshot = snapshot_with_price(pair, 100.0);
+        let signal = buy_signal(pair, 0.9);
+
+        engine.act_on_signal(&signal, &snapshot).await.unwrap();
+
+        let snap = engine.portfolio_snapshot();
+        assert_eq!(snap.positions.len(), 1);
+        assert!(snap.positions[0].quantity > 0);
+        assert_eq!(snap.positions[0].entry_price, 100.0);
+        assert!(
+            snap.cash_usd < 10_000.0,
+            "cash should be debited by the fill"
+        );
+        assert_eq!(engine.order_manager().all_orders().len(), 1);
+        assert_eq!(
+            engine.order_manager().all_orders()[0].status,
+            solstice_execution::OrderStatus::Filled
+        );
+    }
+
+    #[tokio::test]
+    async fn test_act_on_signal_no_price_is_a_noop() {
+        let engine = test_engine(0.1);
+        let pair = test_pair();
+        let empty_snapshot = MarketSnapshot::new(0);
+        let signal = buy_signal(pair, 0.9);
+
+        engine
+            .act_on_signal(&signal, &empty_snapshot)
+            .await
+            .unwrap();
+
+        assert!(engine.portfolio_snapshot().positions.is_empty());
+        assert!(engine.order_manager().all_orders().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_act_on_signal_respects_position_cap() {
+        // max_single_position_usd is 5,000; a first fill near the cap
+        // should leave no headroom for a second one on the same pair.
+        let engine = test_engine(0.1);
+        let pair = test_pair();
+        let snapshot = snapshot_with_price(pair, 100.0);
+
+        engine
+            .act_on_signal(&buy_signal(pair, 0.99), &snapshot)
+            .await
+            .unwrap();
+        let after_first = engine.portfolio_snapshot();
+        let first_size = after_first.positions[0].quantity as f64 * 100.0;
+        assert!(
+            first_size > 4_000.0,
+            "first fill should be sized near the cap"
+        );
+
+        engine
+            .act_on_signal(&buy_signal(pair, 0.99), &snapshot)
+            .await
+            .unwrap();
+        let after_second = engine.portfolio_snapshot();
+
+        // Still exactly one position, and it didn't grow past the cap.
+        assert_eq!(after_second.positions.len(), 1);
+        let second_size = after_second.positions[0].quantity as f64 * 100.0;
+        assert!(second_size <= 5_000.0);
+    }
+
+    #[tokio::test]
+    async fn test_stop_loss_closes_losing_position() {
+        let engine = test_engine(0.05); // 5% stop loss
+        let pair = test_pair();
+        let snapshot = snapshot_with_price(pair, 100.0);
+
+        engine
+            .act_on_signal(&buy_signal(pair, 0.9), &snapshot)
+            .await
+            .unwrap();
+        assert_eq!(engine.portfolio_snapshot().positions.len(), 1);
+
+        // Crash the price in the position directly (mirrors what a real
+        // tick would do via `sample_market`, without needing live quotes).
+        {
+            let mut portfolio = engine.portfolio.lock().unwrap();
+            for position in portfolio.positions.values_mut() {
+                position.current_price = 80.0; // -20%, past the 5% stop
+            }
+        }
+
+        let state = engine.portfolio_state();
+        engine.evaluate_stop_losses(&state);
+
+        let snap = engine.portfolio_snapshot();
+        assert!(
+            snap.positions.is_empty(),
+            "losing position should have closed"
+        );
+        assert!(snap.realized_pnl_usd < 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_portfolio_snapshot_computes_total_value() {
+        let engine = test_engine(0.1);
+        let pair = test_pair();
+        let snapshot = snapshot_with_price(pair, 100.0);
+
+        engine
+            .act_on_signal(&buy_signal(pair, 0.9), &snapshot)
+            .await
+            .unwrap();
+
+        let snap = engine.portfolio_snapshot();
+        let expected_position_value = snap.positions[0].quantity as f64 * 100.0;
+        assert!((snap.total_value_usd - (snap.cash_usd + expected_position_value)).abs() < 1e-6);
+        // No price movement yet, so no unrealized P&L.
+        assert_eq!(snap.unrealized_pnl_usd, 0.0);
+    }
+
+    #[test]
+    fn test_pair_labels_and_circuit_breaker_on_fresh_engine() {
+        let engine = test_engine(0.1);
+        assert_eq!(engine.pair_labels(), vec!["TEST/USDC".to_string()]);
+        assert!(!engine.circuit_breaker_tripped());
+    }
+}
