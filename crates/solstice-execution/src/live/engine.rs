@@ -85,6 +85,9 @@ pub enum LiveEvent {
     MaxCapitalChanged {
         max_capital_usd: f64,
     },
+    MinConfidenceChanged {
+        min_confidence: f64,
+    },
     TickCompleted {
         timestamp: DateTime<Utc>,
         signal_count: usize,
@@ -106,6 +109,7 @@ pub struct LiveStatusSnapshot {
     pub enabled: bool,
     pub wallet_address: String,
     pub max_capital_usd: f64,
+    pub min_confidence: f64,
     pub capital_deployed_usd: f64,
     pub capital_available_usd: f64,
     pub realized_pnl_usd: f64,
@@ -263,6 +267,16 @@ impl LiveTradingEngine {
         self.emit(LiveEvent::MaxCapitalChanged { max_capital_usd });
     }
 
+    /// Set the minimum signal confidence required to act on a signal.
+    /// `plan_signal` reads this fresh on every signal, so a change takes
+    /// effect immediately, not on next restart.
+    pub fn set_min_confidence(&self, min_confidence: f64) {
+        let mut config = self.config.lock().expect("config lock poisoned");
+        config.min_confidence = min_confidence;
+        drop(config);
+        self.emit(LiveEvent::MinConfidenceChanged { min_confidence });
+    }
+
     fn pair_label(&self, pair: &TokenPair) -> String {
         self.pairs
             .iter()
@@ -280,6 +294,7 @@ impl LiveTradingEngine {
             enabled: self.is_enabled(),
             wallet_address: self.wallet_pubkey.to_string(),
             max_capital_usd: config.max_capital_usd,
+            min_confidence: config.min_confidence,
             capital_deployed_usd,
             capital_available_usd: (config.max_capital_usd - capital_deployed_usd).max(0.0),
             realized_pnl_usd: *self.realized_pnl_usd.lock().expect("lock poisoned"),
@@ -432,6 +447,20 @@ impl LiveTradingEngine {
         let price = snapshot
             .best_price(&pair)
             .ok_or_else(|| "no live price available for pair".to_string())?;
+
+        let min_confidence = self
+            .config
+            .lock()
+            .expect("config lock poisoned")
+            .min_confidence;
+        if signal.confidence < min_confidence {
+            return Err(format!(
+                "{} signal confidence {:.0}% below minimum {:.0}% to act",
+                self.pair_label(&pair),
+                signal.confidence * 100.0,
+                min_confidence * 100.0
+            ));
+        }
 
         let is_buy = !matches!(signal.signal_type, SignalType::Sell { .. });
 
@@ -990,6 +1019,7 @@ mod tests {
     fn test_config(max_capital_usd: f64) -> LiveTradingConfig {
         LiveTradingConfig {
             max_capital_usd,
+            min_confidence: 0.0,
             risk_limits: crate::risk::RiskLimits {
                 position: PositionLimits {
                     max_single_position_usd: max_capital_usd as u64,
@@ -1102,6 +1132,43 @@ mod tests {
 
         engine.set_max_capital_usd(100.0);
         assert_eq!(engine.status().max_capital_usd, 100.0);
+    }
+
+    #[test]
+    fn test_set_min_confidence_updates_status() {
+        let pair = test_pair();
+        let engine = test_engine(pair, 50.0);
+
+        engine.set_min_confidence(0.8);
+        assert_eq!(engine.status().min_confidence, 0.8);
+    }
+
+    #[test]
+    fn test_plan_signal_rejects_below_min_confidence() {
+        let pair = test_pair();
+        let token_pair = TokenPair::new(pair.base_mint, pair.quote_mint);
+        let engine = test_engine(pair, 50.0);
+        engine.set_min_confidence(0.8);
+
+        let snapshot = snapshot_with_price(token_pair, 100.0);
+        let signal = buy_signal(token_pair, 0.65);
+
+        let result = engine.plan_signal(&signal, &snapshot);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("below minimum"));
+    }
+
+    #[test]
+    fn test_plan_signal_accepts_at_or_above_min_confidence() {
+        let pair = test_pair();
+        let token_pair = TokenPair::new(pair.base_mint, pair.quote_mint);
+        let engine = test_engine(pair, 50.0);
+        engine.set_min_confidence(0.8);
+
+        let snapshot = snapshot_with_price(token_pair, 100.0);
+        let signal = buy_signal(token_pair, 0.8);
+
+        assert!(engine.plan_signal(&signal, &snapshot).is_ok());
     }
 
     #[test]

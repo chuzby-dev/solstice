@@ -30,6 +30,12 @@ pub struct LiveTradingConfig {
     /// is what actually limits risk, not the balance. Adjustable at
     /// runtime via `LiveTradingEngine::set_max_capital_usd`.
     pub max_capital_usd: f64,
+    /// Minimum signal confidence (0.0-1.0) required to actually act on a
+    /// signal -- anything below this is skipped (emits
+    /// `LiveEvent::SignalSkipped`) rather than sized and traded, no matter
+    /// how it would otherwise score. Adjustable at runtime via
+    /// `LiveTradingEngine::set_min_confidence`.
+    pub min_confidence: f64,
     pub risk_limits: RiskLimits,
     pub kelly_fraction: f64,
     pub default_win_loss_ratio: f64,
@@ -59,6 +65,7 @@ impl Default for LiveTradingConfig {
     fn default() -> Self {
         LiveTradingConfig {
             max_capital_usd: 50.0,
+            min_confidence: 0.65,
             risk_limits: RiskLimits {
                 position: crate::risk::PositionLimits {
                     max_single_position_usd: 50,

@@ -11,10 +11,14 @@ use solstice_execution::order_manager::{Order, OrderStatus};
 use solstice_execution::TradeApproval;
 use solstice_simulation::PortfolioSnapshot;
 
-/// Request body for `POST /api/v1/live/config`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct SetMaxCapitalRequest {
-    pub max_capital_usd: f64,
+/// Request body for `POST /api/v1/live/config`. Both fields are optional
+/// so a caller can adjust either independently -- omitting one leaves it
+/// unchanged.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct LiveConfigRequest {
+    pub max_capital_usd: Option<f64>,
+    /// Minimum signal confidence (0.0-1.0) required to act on a signal.
+    pub min_confidence: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

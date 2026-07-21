@@ -1,7 +1,7 @@
 //! REST endpoint handlers.
 
 use crate::dto::{
-    PerformanceResponse, PositionsResponse, SetMaxCapitalRequest, StatusResponse, TradeResponse,
+    LiveConfigRequest, PerformanceResponse, PositionsResponse, StatusResponse, TradeResponse,
     TradesResponse, WalletResponse,
 };
 use crate::error::{ApiError, ApiResult};
@@ -93,17 +93,32 @@ pub async fn live_disable(State(state): State<AppState>) -> ApiResult<Json<LiveS
     Ok(Json(live.status()))
 }
 
-/// Adjusts the hard capital ceiling the live engine will ever deploy.
+/// Adjusts the hard capital ceiling and/or the minimum-confidence-to-act
+/// threshold the live engine uses. Either field may be omitted to leave
+/// it unchanged.
 pub async fn live_set_config(
     State(state): State<AppState>,
-    Json(body): Json<SetMaxCapitalRequest>,
+    Json(body): Json<LiveConfigRequest>,
 ) -> ApiResult<Json<LiveStatusSnapshot>> {
     let live = require_live(&state)?;
-    if !body.max_capital_usd.is_finite() || body.max_capital_usd < 0.0 {
-        return Err(ApiError::BadRequest(
-            "max_capital_usd must be a non-negative finite number".to_string(),
-        ));
+
+    if let Some(max_capital_usd) = body.max_capital_usd {
+        if !max_capital_usd.is_finite() || max_capital_usd < 0.0 {
+            return Err(ApiError::BadRequest(
+                "max_capital_usd must be a non-negative finite number".to_string(),
+            ));
+        }
+        live.set_max_capital_usd(max_capital_usd);
     }
-    live.set_max_capital_usd(body.max_capital_usd);
+
+    if let Some(min_confidence) = body.min_confidence {
+        if !min_confidence.is_finite() || !(0.0..=1.0).contains(&min_confidence) {
+            return Err(ApiError::BadRequest(
+                "min_confidence must be a finite number between 0.0 and 1.0".to_string(),
+            ));
+        }
+        live.set_min_confidence(min_confidence);
+    }
+
     Ok(Json(live.status()))
 }

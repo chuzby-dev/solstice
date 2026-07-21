@@ -1287,6 +1287,88 @@ needs a restart to pick these fixes up.
 
 ---
 
+## [0.1.0-alpha] - 2026-07-21 (Live monitoring fallout: sell direction, confidence scoring, threshold)
+
+With the ALT/slippage fixes live, the user re-armed live trading and it
+opened a real position (0.0641 SOL @ ~$77.99, first genuine automated
+fill) -- but every subsequent live check showed it just holding, never
+selling, even as price moved. Two separate issues surfaced from watching
+it run for real, both fixed here.
+
+### Fix: live engine always bought, never sold, regardless of signal
+
+`execute_planned_trade` unconditionally built every swap as
+`quote_mint -> base_mint` (spend USDC, buy SOL) no matter what
+`planned.is_buy` said -- so a sell signal would still try to spend USDC,
+and with the wallet holding only $0.23 USDC against 0.205 SOL, every
+attempt reverted on-chain with the same Jupiter `0x1788` error, confirmed
+by directly querying the wallet's USDC token account over read-only RPC.
+
+Fixed by branching on `planned.is_buy` throughout the buy/sell paths:
+- `plan_signal` now treats a sell as reducing (fully closing) existing
+  exposure rather than gating it on the capital/position cap meant for
+  *opening* new exposure -- but requires a position to actually exist,
+  since this engine can't short.
+- `execute_planned_trade` builds `base_mint -> quote_mint` for a sell,
+  sized to the position's actual held quantity (never more), instead of
+  an independent USD figure that could exceed what's held.
+- `record_fill`'s bookkeeping now mirrors `close_position`'s stop-loss
+  exit path for a sell: removes the position, computes realized PnL from
+  the quote's actual proceeds, and adjusts `capital_deployed_usd`.
+
+Along the way, a second finding worth flagging explicitly: the
+`SimpleMovingAverageStrategy` this live setup runs only ever emits `Buy`
+signals (crossover-up) or nothing (crossover-down) -- it never emits a
+`Sell`. So in this specific single-strategy configuration, a position can
+currently only close via the stop-loss, never via a strategy signal, even
+with the direction bug fixed. Not addressed here since the user didn't
+ask for a sell-signal-emitting SMA variant -- just noted for when it
+becomes relevant.
+
+### Feature: real SMA confidence scoring + a user-set action threshold
+
+The user noticed every `SignalGenerated` event showed exactly 65%
+confidence, always, and asked why never 85%. Looking at
+`SimpleMovingAverageStrategy`, the answer was that `confidence` was a
+hardcoded constant (`0.65`) on every single signal, regardless of how
+strong the crossover actually was -- not a real measure of anything, and
+notably the exact same number `PositionSizer`'s Kelly-fraction math uses
+to decide bet size.
+
+- Replaced the constant with `crossover_confidence(short_sma, long_sma)`:
+  scales with the relative gap between the two averages, clamped to
+  `[0.5, 0.95]` -- a razor-thin crossover sits near the floor, a wide,
+  decisive one approaches the ceiling. Simple heuristic, not a calibrated
+  probability, but at least responsive to the actual signal strength now.
+- Added `LiveTradingConfig::min_confidence` (default `0.65`, matching the
+  strategy's old fixed value so existing behavior doesn't silently change
+  for anyone who hasn't touched it): `plan_signal` now rejects any signal
+  below this threshold before sizing or risk-checking it, emitting
+  `SignalSkipped`. Adjustable at runtime via the new
+  `LiveTradingEngine::set_min_confidence`, mirroring
+  `set_max_capital_usd`'s existing pattern exactly.
+- Wired end to end: `POST /api/v1/live/config` now accepts an optional
+  `min_confidence` alongside the existing optional `max_capital_usd` (the
+  request DTO, `SetMaxCapitalRequest`, was renamed `LiveConfigRequest` and
+  both fields made independently optional -- omitting one leaves it
+  unchanged). `LiveStatusSnapshot` and the dashboard's Live Trading page
+  both surface and let you edit it, next to the existing max-capital
+  control.
+
+### Verified
+
+`cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features
+-D warnings`, and `cargo test --workspace` all pass clean (8 new tests
+across `solstice-strategy` and `solstice-execution`: confidence-floor,
+confidence-scaling, confidence-ceiling-clamp, wider-crossover-higher-
+confidence, sell-without-a-position rejected, sell-with-a-position
+accepted, threshold-rejects-below-minimum, threshold-accepts-at-minimum).
+`tsc -b` clean on the dashboard. The running server was stopped (safe --
+capital fully deployed but no pending signals) and restarted on the new
+binary each time, same wallet re-confirmed via `/api/v1/wallet`.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started

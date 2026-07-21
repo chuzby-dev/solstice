@@ -14,11 +14,25 @@ use solstice_core::types::{Signal, SignalType, TokenPair};
 use std::collections::VecDeque;
 use tokio::sync::Mutex;
 
+/// Confidence floor/ceiling: even a razor-thin crossover is worth *some*
+/// weight (it's still a real signal), and even a huge divergence never
+/// claims near-certainty -- this is a simple heuristic, not a calibrated
+/// probability.
+const MIN_CONFIDENCE: f64 = 0.5;
+const MAX_CONFIDENCE: f64 = 0.95;
+
+/// How strongly the crossover's relative gap maps to confidence: a 1%
+/// gap between the short and long SMA adds this many confidence points
+/// (before clamping to [`MIN_CONFIDENCE`], [`MAX_CONFIDENCE`]). Chosen so
+/// a decisive, well-separated crossover (~0.9% gap on an asset like SOL)
+/// reaches the confidence ceiling, while a marginal, just-crossed gap
+/// sits close to the floor.
+const CONFIDENCE_GAP_SCALE: f64 = 50.0;
+
 pub struct SimpleMovingAverageStrategy {
     pair: TokenPair,
     short_period: usize,
     long_period: usize,
-    confidence: f64,
     history: Mutex<VecDeque<f64>>,
 }
 
@@ -28,7 +42,6 @@ impl SimpleMovingAverageStrategy {
             pair,
             short_period,
             long_period,
-            confidence: 0.65,
             history: Mutex::new(VecDeque::new()),
         }
     }
@@ -39,6 +52,17 @@ impl SimpleMovingAverageStrategy {
         }
         let sum: f64 = history.iter().rev().take(period).sum();
         Some(sum / period as f64)
+    }
+
+    /// Confidence scaled by how decisively the short SMA has crossed the
+    /// long SMA -- a signal on a wide, well-separated crossover carries
+    /// more weight than one on a crossover that just barely happened.
+    fn crossover_confidence(short_sma: f64, long_sma: f64) -> f64 {
+        if long_sma <= 0.0 {
+            return MIN_CONFIDENCE;
+        }
+        let relative_gap = ((short_sma - long_sma) / long_sma).abs();
+        (MIN_CONFIDENCE + relative_gap * CONFIDENCE_GAP_SCALE).clamp(MIN_CONFIDENCE, MAX_CONFIDENCE)
     }
 }
 
@@ -84,10 +108,11 @@ impl Strategy for SimpleMovingAverageStrategy {
         };
 
         if short_sma > long_sma {
+            let confidence = Self::crossover_confidence(short_sma, long_sma);
             let mut signal = Signal::new(
                 self.name().to_string(),
                 SignalType::Buy { pair: self.pair },
-                self.confidence,
+                confidence,
             );
             signal.metadata = json!({ "short_sma": short_sma, "long_sma": long_sma });
             Ok(vec![signal])
@@ -156,6 +181,56 @@ mod tests {
             last_signals[0].signal_type,
             SignalType::Buy { .. }
         ));
+    }
+
+    #[test]
+    fn test_crossover_confidence_at_zero_gap_is_floor() {
+        let confidence = SimpleMovingAverageStrategy::crossover_confidence(100.0, 100.0);
+        assert_eq!(confidence, MIN_CONFIDENCE);
+    }
+
+    #[test]
+    fn test_crossover_confidence_scales_with_gap() {
+        let narrow = SimpleMovingAverageStrategy::crossover_confidence(100.1, 100.0);
+        let wide = SimpleMovingAverageStrategy::crossover_confidence(105.0, 100.0);
+        assert!(narrow > MIN_CONFIDENCE);
+        assert!(wide > narrow);
+    }
+
+    #[test]
+    fn test_crossover_confidence_clamps_to_ceiling() {
+        let confidence = SimpleMovingAverageStrategy::crossover_confidence(1000.0, 100.0);
+        assert_eq!(confidence, MAX_CONFIDENCE);
+    }
+
+    #[tokio::test]
+    async fn test_wider_crossover_yields_higher_confidence_signal() {
+        let pair = TokenPair::new(Pubkey::new_unique(), Pubkey::new_unique());
+        let strategy = SimpleMovingAverageStrategy::new(pair, 2, 4);
+        let portfolio = PortfolioState::empty();
+
+        // A sharp jump on the last tick should produce a wider short/long
+        // gap (and thus higher confidence) than the earlier, gentler climb.
+        let prices = [100.0, 100.5, 101.0, 101.5, 150.0];
+        let mut signals_by_tick = Vec::new();
+        for price in prices {
+            signals_by_tick.push(
+                strategy
+                    .evaluate(&snapshot_with_price(pair, price), &portfolio, &json!({}))
+                    .await
+                    .unwrap(),
+            );
+        }
+
+        let early_confidence = signals_by_tick[3]
+            .first()
+            .expect("should have a signal once enough history accumulates")
+            .confidence;
+        let late_confidence = signals_by_tick[4]
+            .first()
+            .expect("should have a signal on the sharp jump")
+            .confidence;
+        assert!(late_confidence > early_confidence);
     }
 
     #[tokio::test]

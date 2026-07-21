@@ -105,6 +105,7 @@ export interface LiveStatusResponse {
   enabled: boolean;
   wallet_address: string;
   max_capital_usd: number;
+  min_confidence: number;
   capital_deployed_usd: number;
   capital_available_usd: number;
   realized_pnl_usd: number;
@@ -136,4 +137,5 @@ export type LiveEvent =
   | { type: 'LiveTradingEnabled' }
   | { type: 'LiveTradingDisabled' }
   | { type: 'MaxCapitalChanged'; max_capital_usd: number }
+  | { type: 'MinConfidenceChanged'; min_confidence: number }
   | { type: 'TickCompleted'; timestamp: string; signal_count: number };

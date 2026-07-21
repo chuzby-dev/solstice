@@ -41,6 +41,11 @@ function describeLiveEvent(event: LiveEvent): { text: string; tone: 'neutral' | 
       return { text: 'Live trading disabled', tone: 'neutral' };
     case 'MaxCapitalChanged':
       return { text: `Max capital changed to ${formatUsd(event.max_capital_usd)}`, tone: 'neutral' };
+    case 'MinConfidenceChanged':
+      return {
+        text: `Minimum confidence to act changed to ${(event.min_confidence * 100).toFixed(0)}%`,
+        tone: 'neutral',
+      };
     case 'TickCompleted':
       return { text: `Tick complete — ${event.signal_count} signal(s)`, tone: 'neutral' };
   }
@@ -57,6 +62,7 @@ export function LiveTradingPage() {
   const { data: status, error, loading } = usePolling(api.liveStatus, 5000);
   const { events } = useLiveEvents();
   const [maxCapitalInput, setMaxCapitalInput] = useState('');
+  const [minConfidenceInput, setMinConfidenceInput] = useState('');
   const [confirmText, setConfirmText] = useState('');
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -72,6 +78,24 @@ export function LiveTradingPage() {
     try {
       await api.liveSetMaxCapital(value);
       setMaxCapitalInput('');
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSetMinConfidence = async () => {
+    const percent = Number(minConfidenceInput);
+    if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
+      setActionError('Enter a valid percentage between 0 and 100.');
+      return;
+    }
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api.liveSetMinConfidence(percent / 100);
+      setMinConfidenceInput('');
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -135,6 +159,10 @@ export function LiveTradingPage() {
             <StatTile label="Max capital" value={formatUsd(status.max_capital_usd)} />
             <StatTile label="Deployed" value={formatUsd(status.capital_deployed_usd)} />
             <StatTile label="Available" value={formatUsd(status.capital_available_usd)} />
+            <StatTile
+              label="Min confidence to act"
+              value={`${(status.min_confidence * 100).toFixed(0)}%`}
+            />
           </div>
 
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -203,6 +231,37 @@ export function LiveTradingPage() {
               <p className="mt-2 text-xs text-[var(--text-muted)]">
                 Hard ceiling on total capital this engine will ever deploy — independent of
                 the wallet's actual balance.
+              </p>
+            </div>
+
+            {/* Minimum confidence to act */}
+            <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-1)] p-4">
+              <div className="mb-3 text-sm font-medium text-[var(--text-secondary)]">
+                Min confidence to act ({(status.min_confidence * 100).toFixed(0)}% currently)
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value={minConfidenceInput}
+                  onChange={(e) => setMinConfidenceInput(e.target.value)}
+                  placeholder="e.g. 65"
+                  className="flex-1 rounded-md border border-[var(--border)] bg-[var(--page)] px-3 py-2 text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={handleSetMinConfidence}
+                  disabled={busy || minConfidenceInput === ''}
+                  className="shrink-0 rounded-md border border-[var(--border)] px-3 py-2 text-sm font-medium hover:bg-[var(--border)] disabled:opacity-40"
+                >
+                  Save
+                </button>
+              </div>
+              <p className="mt-2 text-xs text-[var(--text-muted)]">
+                Signals below this confidence are skipped entirely, regardless of direction.
+                Default 65%.
               </p>
             </div>
           </div>

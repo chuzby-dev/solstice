@@ -54,6 +54,8 @@ export const api = {
   liveDisable: () => postJson<LiveStatusResponse>('/live/disable'),
   liveSetMaxCapital: (max_capital_usd: number) =>
     postJson<LiveStatusResponse>('/live/config', { max_capital_usd }),
+  liveSetMinConfidence: (min_confidence: number) =>
+    postJson<LiveStatusResponse>('/live/config', { min_confidence }),
 };
 
 export function wsUrl(): string {
