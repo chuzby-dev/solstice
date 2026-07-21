@@ -433,6 +433,39 @@ impl LiveTradingEngine {
             .best_price(&pair)
             .ok_or_else(|| "no live price available for pair".to_string())?;
 
+        let is_buy = !matches!(signal.signal_type, SignalType::Sell { .. });
+
+        if !is_buy {
+            // A sell only reduces exposure, so (unlike a buy) it isn't
+            // gated by the capital/position cap -- but this engine can't
+            // short, so it can only sell what an open position already
+            // holds. `execute_planned_trade` sells the *entire* held
+            // quantity (a full close, mirroring `close_position`'s
+            // stop-loss path) rather than sizing a partial amount here,
+            // since sizing a sell in USD terms the same way as a buy
+            // would risk trying to sell more base token than is actually
+            // held.
+            let _ = price;
+            let has_position = self
+                .positions
+                .lock()
+                .expect("positions lock poisoned")
+                .contains_key(&pair);
+            return if has_position {
+                Ok(PlannedTrade {
+                    pair,
+                    pair_label: self.pair_label(&pair),
+                    is_buy: false,
+                    size_usd: 0,
+                })
+            } else {
+                Err(format!(
+                    "{} sell signal but no open position to sell",
+                    self.pair_label(&pair)
+                ))
+            };
+        }
+
         let config = self.config.lock().expect("config lock poisoned");
         let capital_deployed_usd = *self.capital_deployed_usd.lock().expect("lock poisoned");
         let positions = self.positions.lock().expect("positions lock poisoned");
@@ -476,12 +509,11 @@ impl LiveTradingEngine {
             return Err(format!("risk check rejected: {approval:?}"));
         }
 
-        let is_buy = !matches!(signal.signal_type, SignalType::Sell { .. });
         let _ = price;
         Ok(PlannedTrade {
             pair,
             pair_label: self.pair_label(&pair),
-            is_buy,
+            is_buy: true,
             size_usd,
         })
     }
@@ -530,20 +562,53 @@ impl LiveTradingEngine {
             return;
         };
 
-        let quote_amount_raw =
-            (planned.size_usd as f64 * 10f64.powi(live_pair.quote_decimals as i32)).round() as u64;
         let slippage_bps = self
             .config
             .lock()
             .expect("config lock poisoned")
             .slippage_bps;
 
-        let swap = SwapRequest {
-            input_mint: live_pair.quote_mint,
-            output_mint: live_pair.base_mint,
-            amount: quote_amount_raw,
-            payer: self.wallet_pubkey,
-            slippage_bps,
+        // A buy spends the quote token (sized in USD, converted to the
+        // quote mint's raw units) to acquire the base token. A sell does
+        // the reverse -- but is sized by the base token actually held in
+        // the open position, not by an independent USD figure, since this
+        // engine can't sell base token it doesn't have. `plan_signal`
+        // already confirmed a position exists for a sell signal before
+        // getting here.
+        let swap = if planned.is_buy {
+            let quote_amount_raw = (planned.size_usd as f64
+                * 10f64.powi(live_pair.quote_decimals as i32))
+            .round() as u64;
+            SwapRequest {
+                input_mint: live_pair.quote_mint,
+                output_mint: live_pair.base_mint,
+                amount: quote_amount_raw,
+                payer: self.wallet_pubkey,
+                slippage_bps,
+            }
+        } else {
+            let held_quantity_raw = self
+                .positions
+                .lock()
+                .expect("lock poisoned")
+                .get(&planned.pair)
+                .map(|p| p.quantity_raw)
+                .unwrap_or(0);
+            if held_quantity_raw == 0 {
+                self.emit(LiveEvent::OrderFailed {
+                    strategy: signal.strategy.clone(),
+                    pair_label: planned.pair_label.clone(),
+                    reason: "sell signal but no open position to sell".to_string(),
+                });
+                return;
+            }
+            SwapRequest {
+                input_mint: live_pair.base_mint,
+                output_mint: live_pair.quote_mint,
+                amount: held_quantity_raw,
+                payer: self.wallet_pubkey,
+                slippage_bps,
+            }
         };
 
         // Load the wallet key and resolve the tip account (cached -- see
@@ -613,12 +678,16 @@ impl LiveTradingEngine {
 
         match outcome {
             Ok(outcome) => {
-                let price = quote_price(live_pair, &quote);
-                self.record_fill(planned, live_pair, &quote, price);
+                let price = if planned.is_buy {
+                    quote_price(live_pair, &quote)
+                } else {
+                    sell_price(live_pair, &quote)
+                };
+                let size_usd = self.record_fill(planned, live_pair, &quote, price);
                 self.emit(LiveEvent::OrderFilled {
                     strategy: signal.strategy.clone(),
                     pair_label: planned.pair_label.clone(),
-                    size_usd: planned.size_usd,
+                    size_usd,
                     price,
                     method: format!("{:?}", outcome.method),
                     signature: outcome.signatures.first().map(|s| s.to_string()),
@@ -634,60 +703,110 @@ impl LiveTradingEngine {
         }
     }
 
+    /// Update position/capital bookkeeping for a landed fill and return
+    /// its actual USD size -- for a buy this is `planned.size_usd` (known
+    /// before the swap); for a sell it's only known from the quote's
+    /// proceeds, since the amount sold was sized in base-token terms (the
+    /// full held quantity), not USD.
     fn record_fill(
         &self,
         planned: &PlannedTrade,
         live_pair: &LiveTradedPair,
         quote: &Quote,
         price: f64,
-    ) {
-        let quantity_raw = quote.out_amount;
+    ) -> u64 {
+        if planned.is_buy {
+            let quantity_raw = quote.out_amount;
+            *self.capital_deployed_usd.lock().expect("lock poisoned") += planned.size_usd as f64;
 
-        *self.capital_deployed_usd.lock().expect("lock poisoned") += planned.size_usd as f64;
-
-        let plan = ExecutionPlan {
-            signal: Signal::new(
-                "live".to_string(),
-                SignalType::Buy { pair: planned.pair },
-                1.0,
-            ),
-            pair: planned.pair,
-            quote: quote.clone(),
-            size_usd: planned.size_usd,
-            approval: TradeApproval::Approved,
-        };
-        if let Ok(order_id) = self.order_manager.submit(plan) {
-            let _ = self.order_manager.record_fill(
-                &order_id,
-                Fill {
-                    amount: planned.size_usd,
-                    price,
-                    fee: 0.0,
-                    timestamp: Utc::now(),
-                    tx_signature: None,
-                },
-            );
-        }
-
-        let _ = live_pair;
-        self.positions
-            .lock()
-            .expect("lock poisoned")
-            .entry(planned.pair)
-            .and_modify(|p| {
-                p.quantity_raw = p.quantity_raw.saturating_add(quantity_raw);
-                p.allocated_usd += planned.size_usd as f64;
-                p.current_price = price;
-            })
-            .or_insert_with(|| LivePosition {
-                id: PositionId::new(),
+            let plan = ExecutionPlan {
+                signal: Signal::new(
+                    "live".to_string(),
+                    SignalType::Buy { pair: planned.pair },
+                    1.0,
+                ),
                 pair: planned.pair,
-                quantity_raw,
-                entry_price: price,
-                current_price: price,
-                allocated_usd: planned.size_usd as f64,
-                opened_at: Utc::now(),
-            });
+                quote: quote.clone(),
+                size_usd: planned.size_usd,
+                approval: TradeApproval::Approved,
+            };
+            if let Ok(order_id) = self.order_manager.submit(plan) {
+                let _ = self.order_manager.record_fill(
+                    &order_id,
+                    Fill {
+                        amount: planned.size_usd,
+                        price,
+                        fee: 0.0,
+                        timestamp: Utc::now(),
+                        tx_signature: None,
+                    },
+                );
+            }
+
+            self.positions
+                .lock()
+                .expect("lock poisoned")
+                .entry(planned.pair)
+                .and_modify(|p| {
+                    p.quantity_raw = p.quantity_raw.saturating_add(quantity_raw);
+                    p.allocated_usd += planned.size_usd as f64;
+                    p.current_price = price;
+                })
+                .or_insert_with(|| LivePosition {
+                    id: PositionId::new(),
+                    pair: planned.pair,
+                    quantity_raw,
+                    entry_price: price,
+                    current_price: price,
+                    allocated_usd: planned.size_usd as f64,
+                    opened_at: Utc::now(),
+                });
+
+            planned.size_usd
+        } else {
+            // A sell here is always a full close (see `plan_signal`/
+            // `execute_planned_trade`): the entire held quantity was sold,
+            // so the position is removed rather than decremented, mirroring
+            // `close_position`'s stop-loss path.
+            let allocated_usd = self
+                .positions
+                .lock()
+                .expect("lock poisoned")
+                .remove(&planned.pair)
+                .map(|p| p.allocated_usd)
+                .unwrap_or(0.0);
+            let exit_value_usd =
+                quote.out_amount as f64 / 10f64.powi(live_pair.quote_decimals as i32);
+            let realized_pnl = exit_value_usd - allocated_usd;
+            *self.realized_pnl_usd.lock().expect("lock poisoned") += realized_pnl;
+            *self.capital_deployed_usd.lock().expect("lock poisoned") -= allocated_usd;
+
+            let plan = ExecutionPlan {
+                signal: Signal::new(
+                    "live".to_string(),
+                    SignalType::Sell { pair: planned.pair },
+                    1.0,
+                ),
+                pair: planned.pair,
+                quote: quote.clone(),
+                size_usd: exit_value_usd.round() as u64,
+                approval: TradeApproval::Approved,
+            };
+            if let Ok(order_id) = self.order_manager.submit(plan) {
+                let _ = self.order_manager.record_fill(
+                    &order_id,
+                    Fill {
+                        amount: exit_value_usd.round() as u64,
+                        price,
+                        fee: 0.0,
+                        timestamp: Utc::now(),
+                        tx_signature: None,
+                    },
+                );
+            }
+
+            exit_value_usd.round() as u64
+        }
     }
 
     async fn evaluate_stop_losses(&self, _snapshot: &MarketSnapshot) {
@@ -825,6 +944,17 @@ fn quote_price(pair: &LiveTradedPair, quote: &Quote) -> f64 {
     }
 }
 
+fn sell_price(pair: &LiveTradedPair, quote: &Quote) -> f64 {
+    // For a sell (base -> quote), price = quote received / base spent.
+    let quote_amount = quote.out_amount as f64 / 10f64.powi(pair.quote_decimals as i32);
+    let base_amount = quote.in_amount as f64 / 10f64.powi(base_decimals_hint(pair) as i32);
+    if base_amount <= 0.0 {
+        0.0
+    } else {
+        quote_amount / base_amount
+    }
+}
+
 fn base_decimals_hint(pair: &LiveTradedPair) -> u8 {
     pair.base_decimals
 }
@@ -932,6 +1062,10 @@ mod tests {
         Signal::new("Test".to_string(), SignalType::Buy { pair }, confidence)
     }
 
+    fn sell_signal(pair: TokenPair, confidence: f64) -> Signal {
+        Signal::new("Test".to_string(), SignalType::Sell { pair }, confidence)
+    }
+
     #[test]
     fn test_disabled_by_default() {
         let pair = test_pair();
@@ -1010,6 +1144,50 @@ mod tests {
         let result = engine.plan_signal(&signal, &snapshot);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("cap"));
+    }
+
+    #[test]
+    fn test_plan_signal_sell_rejects_without_a_position() {
+        let pair = test_pair();
+        let token_pair = TokenPair::new(pair.base_mint, pair.quote_mint);
+        let engine = test_engine(pair, 50.0);
+
+        let snapshot = snapshot_with_price(token_pair, 100.0);
+        let signal = sell_signal(token_pair, 0.95);
+
+        let result = engine.plan_signal(&signal, &snapshot);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("no open position"));
+    }
+
+    #[test]
+    fn test_plan_signal_sell_succeeds_with_a_position() {
+        let pair = test_pair();
+        let token_pair = TokenPair::new(pair.base_mint, pair.quote_mint);
+        let engine = test_engine(pair, 50.0);
+
+        engine.positions.lock().unwrap().insert(
+            token_pair,
+            LivePosition {
+                id: PositionId::new(),
+                pair: token_pair,
+                quantity_raw: 1_000_000_000,
+                entry_price: 100.0,
+                current_price: 100.0,
+                allocated_usd: 10.0,
+                opened_at: Utc::now(),
+            },
+        );
+
+        // Even fully capital-deployed, a sell must still be plannable --
+        // it only reduces exposure, never opens new exposure.
+        *engine.capital_deployed_usd.lock().unwrap() = 50.0;
+
+        let snapshot = snapshot_with_price(token_pair, 100.0);
+        let signal = sell_signal(token_pair, 0.95);
+
+        let planned = engine.plan_signal(&signal, &snapshot).unwrap();
+        assert!(!planned.is_buy);
     }
 
     #[test]
