@@ -329,38 +329,43 @@ Solstice development follows a phased approach with clear milestones and gates. 
 ### Milestones
 
 **8.1 - Dashboard Foundation** (Week 53-55)
-- [ ] React + TypeScript setup
-- [ ] API client library
-- [ ] Layout components
-- [ ] Routing
+- [x] React + TypeScript setup
+- [x] API client library
+- [x] Layout components
+- [x] Routing
 - **Dependencies**: 7.1, 7.2
 - **Gate**: Dashboard compiles and displays
 
 **8.2 - Core Pages** (Week 55-57)
-- [ ] Status page
-- [ ] Positions page
-- [ ] Trades page
-- [ ] Performance metrics page
+- [x] Status page
+- [x] Positions page
+- [x] Trades page
+- [x] Performance metrics page
 - **Dependencies**: 8.1
 - **Gate**: Core information visible
 
 **8.3 - Real-Time Updates** (Week 57-59)
-- [ ] WebSocket integration
-- [ ] Live position updates
-- [ ] Live trade stream
-- [ ] Live metrics
+- [x] WebSocket integration
+- [x] Live position updates
+- [x] Live trade stream
+- [x] Live metrics
 - **Dependencies**: 8.1, 7.2
 - **Gate**: Dashboard updates in real-time
 
-**8.4 - Control Interface** (Week 59-61)
+**8.4 - Control Interface** (Week 59-61) — **deferred**
 - [ ] Configuration management
 - [ ] Strategy selection
 - [ ] Trading controls (start/stop)
 - [ ] Manual order submission
 - **Dependencies**: 8.3
 - **Gate**: Can control platform from dashboard
+- **Status**: Not built. The user's goal for this phase was a monitoring/simulation
+  view to observe live paper-trading behavior, not remote control. `solstice-api`
+  currently exposes no mutating endpoints (status/positions/trades/performance/ws
+  are all read-only), so a control interface would require new backend surface
+  area first. Left as explicit future work rather than half-implemented.
 
-**Phase 8 Gate**: Dashboard fully functional for monitoring and control.
+**Phase 8 Gate**: Dashboard functional for monitoring live paper trading (8.1-8.3 met; 8.4 deferred, see above).
 
 ---
 

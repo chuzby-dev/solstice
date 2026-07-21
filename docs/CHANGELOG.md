@@ -530,6 +530,62 @@ aiming for — consuming this API's REST endpoints and WebSocket stream.
 
 ---
 
+## [0.1.0-alpha] - 2026-07-21 (Phase 8)
+
+### Phase 8.1/8.2/8.3 - React Dashboard ✅ (8.4 control interface deferred)
+
+New `dashboard/` app: React 19 + TypeScript + Vite, Tailwind v4, React Router,
+Recharts. This is the professional simulation GUI the user's mid-session pivot
+was aiming for — a live view onto the paper-trading engine running behind
+`solstice-api`, not a mock or a storyboard.
+
+```sh
+cargo run -p solstice-api --bin serve   # terminal 1 — engine + API on :8080
+npm run dev --prefix dashboard          # terminal 2 — dashboard on :5173
+```
+
+The Vite dev server proxies `/api/*` (including the WebSocket upgrade) to
+`127.0.0.1:8080`, so the dashboard talks to the real API with no CORS
+workaround needed in development.
+
+**Pages** (`HashRouter`, four routes under a shared `Layout` sidebar/topbar):
+- **Overview** — status/pairs/positions/portfolio-value stat tiles, a live
+  Raydium-vs-Orca price chart built by folding the WebSocket event stream,
+  and a scrolling activity feed of every `EngineEvent`
+- **Positions** — polls `GET /positions` every 5s
+- **Trades** — polls `GET /trades` every 5s, color-coded order status
+- **Performance** — polls `GET /performance` every 5s; stat tiles plus a
+  portfolio-value-over-time chart accumulated client-side from repeated polls
+  (the API itself has no historical-series endpoint, so this is a session-local
+  view, not a query against stored history)
+
+**Data flow**: a small typed API client (`src/api/client.ts`, DTOs hand-mirrored
+from `solstice-api::dto` in `src/api/types.ts`) backs a `usePolling` hook for
+the REST pages, and a `useEngineEvents` WebSocket hook (auto-reconnect, capped
+200-event rolling buffer) feeds the live Overview chart and activity feed.
+
+**Color/chart methodology**: built per the `dataviz` skill's validated default
+palette — categorical hues in fixed order (Raydium = series-1/blue, Orca =
+series-6/orange), status colors reserved for order/connection state, dark-mode
+CSS custom properties, thin 2px lines, legend + tooltip on both charts.
+
+**8.4 (control interface) deferred, not built**: the roadmap's Phase 8.4 calls
+for configuration management, strategy selection, start/stop controls, and
+manual order submission. `solstice-api` currently exposes only read-only
+endpoints (status/positions/trades/performance/ws) — there is no mutating
+surface for the dashboard to call. Building a control UI against endpoints
+that don't exist would mean either a fake/no-op UI or scope-creeping into new
+backend work the user hasn't asked for. Left as explicit future work.
+
+**Verified end to end, not just built**: ran `cargo build`/`tsc -b`/`vite build`
+clean, then ran both the real `serve` binary (live Helius mainnet data) and
+`vite dev` together and drove all four pages in a browser — confirmed live
+portfolio value, an actual `SpreadArb` fill, live Raydium/Orca price ticks on
+the chart, and the WebSocket reconnect badge going Connecting → Live, all
+against genuine engine state rather than fixtures.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started
