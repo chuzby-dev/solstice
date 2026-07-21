@@ -20,6 +20,16 @@ pub struct StatusResponse {
     pub circuit_breaker_tripped: bool,
 }
 
+/// A wallet's public address and its current SOL balance. Read-only by
+/// design -- there is no field or endpoint here that can move funds; this
+/// server only reports what it can see.
+#[derive(Debug, Clone, Serialize)]
+pub struct WalletResponse {
+    pub address: String,
+    pub balance_lamports: u64,
+    pub balance_sol: f64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PositionsResponse {
     pub positions: Vec<solstice_simulation::PositionSnapshot>,

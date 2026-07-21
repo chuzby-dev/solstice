@@ -10,6 +10,7 @@ pub mod error;
 pub mod simulation;
 pub mod transaction;
 pub mod types;
+pub mod wallet;
 
 pub use accounts::{AccountInfo, AccountQueryConfig, BatchAccountResult};
 pub use client::SolanaRpcClient;
@@ -17,6 +18,7 @@ pub use error::{BlockchainError, BlockchainResult};
 pub use simulation::{SimulationConfig, SimulationErrorKind, SimulationResult};
 pub use transaction::{SubmissionResult, TransactionBuilder};
 pub use types::*;
+pub use wallet::WalletFile;
 
 #[cfg(test)]
 mod tests {

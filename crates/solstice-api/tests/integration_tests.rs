@@ -91,7 +91,7 @@ async fn body_json(response: axum::response::Response) -> serde_json::Value {
 
 #[tokio::test]
 async fn test_status_endpoint_reflects_engine_state() {
-    let server = ApiServer::new(test_engine(), "127.0.0.1:0".parse().unwrap());
+    let server = ApiServer::new(test_engine(), "127.0.0.1:0".parse().unwrap(), None);
     let response = server
         .router()
         .oneshot(
@@ -114,7 +114,7 @@ async fn test_status_endpoint_reflects_engine_state() {
 
 #[tokio::test]
 async fn test_positions_endpoint_empty_for_fresh_engine() {
-    let server = ApiServer::new(test_engine(), "127.0.0.1:0".parse().unwrap());
+    let server = ApiServer::new(test_engine(), "127.0.0.1:0".parse().unwrap(), None);
     let response = server
         .router()
         .oneshot(
@@ -133,7 +133,7 @@ async fn test_positions_endpoint_empty_for_fresh_engine() {
 
 #[tokio::test]
 async fn test_trades_endpoint_empty_for_fresh_engine() {
-    let server = ApiServer::new(test_engine(), "127.0.0.1:0".parse().unwrap());
+    let server = ApiServer::new(test_engine(), "127.0.0.1:0".parse().unwrap(), None);
     let response = server
         .router()
         .oneshot(
@@ -152,7 +152,7 @@ async fn test_trades_endpoint_empty_for_fresh_engine() {
 
 #[tokio::test]
 async fn test_performance_endpoint_reflects_initial_capital() {
-    let server = ApiServer::new(test_engine(), "127.0.0.1:0".parse().unwrap());
+    let server = ApiServer::new(test_engine(), "127.0.0.1:0".parse().unwrap(), None);
     let response = server
         .router()
         .oneshot(
@@ -173,7 +173,7 @@ async fn test_performance_endpoint_reflects_initial_capital() {
 
 #[tokio::test]
 async fn test_unknown_route_returns_404() {
-    let server = ApiServer::new(test_engine(), "127.0.0.1:0".parse().unwrap());
+    let server = ApiServer::new(test_engine(), "127.0.0.1:0".parse().unwrap(), None);
     let response = server
         .router()
         .oneshot(
@@ -188,13 +188,53 @@ async fn test_unknown_route_returns_404() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
+#[tokio::test]
+async fn test_wallet_endpoint_404_when_not_configured() {
+    let server = ApiServer::new(test_engine(), "127.0.0.1:0".parse().unwrap(), None);
+    let response = server
+        .router()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/wallet")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_wallet_endpoint_502_when_rpc_unreachable() {
+    let wallet = solstice_api::WalletState {
+        pubkey: Pubkey::new_unique(),
+        rpc: Arc::new(
+            SolanaRpcClient::with_endpoints(vec!["http://127.0.0.1:1".to_string()]).unwrap(),
+        ),
+    };
+    let server = ApiServer::new(test_engine(), "127.0.0.1:0".parse().unwrap(), Some(wallet));
+    let response = server
+        .router()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/wallet")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+}
+
 /// Binds a real TCP listener and drives a real WebSocket handshake +
 /// message against it — `tower::ServiceExt::oneshot` can't exercise a
 /// protocol upgrade, since that hijacks the underlying connection.
 #[tokio::test]
 async fn test_websocket_streams_tick_completed_event() {
     let engine = test_engine();
-    let server = ApiServer::new(engine.clone(), "127.0.0.1:0".parse().unwrap());
+    let server = ApiServer::new(engine.clone(), "127.0.0.1:0".parse().unwrap(), None);
     let router = server.router();
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

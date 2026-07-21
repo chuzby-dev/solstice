@@ -1,6 +1,6 @@
 //! Axum HTTP/WebSocket server wiring.
 
-use crate::state::AppState;
+use crate::state::{AppState, WalletState};
 use crate::{handlers, websocket};
 use axum::routing::get;
 use axum::Router;
@@ -17,14 +17,19 @@ pub struct ApiServer {
 }
 
 impl ApiServer {
-    pub fn new(engine: Arc<PaperTradingEngine>, addr: SocketAddr) -> Self {
-        let state = AppState::new(engine);
+    pub fn new(
+        engine: Arc<PaperTradingEngine>,
+        addr: SocketAddr,
+        wallet: Option<WalletState>,
+    ) -> Self {
+        let state = AppState::new(engine, wallet);
 
         let router = Router::new()
             .route("/api/v1/status", get(handlers::status))
             .route("/api/v1/positions", get(handlers::positions))
             .route("/api/v1/trades", get(handlers::trades))
             .route("/api/v1/performance", get(handlers::performance))
+            .route("/api/v1/wallet", get(handlers::wallet))
             .route("/api/v1/ws", get(websocket::ws_handler))
             .layer(CorsLayer::permissive())
             .layer(TraceLayer::new_for_http())

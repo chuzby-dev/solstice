@@ -3,6 +3,7 @@ import type {
   PositionsResponse,
   StatusResponse,
   TradesResponse,
+  WalletResponse,
 } from './types';
 
 // Vite's dev proxy (vite.config.ts) forwards /api to the solstice-api
@@ -18,11 +19,22 @@ async function getJson<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+/** `null` means "no wallet configured" (404) — not an error to surface. */
+async function getWallet(): Promise<WalletResponse | null> {
+  const response = await fetch(`${BASE}/wallet`);
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    throw new Error(`/wallet failed: ${response.status} ${response.statusText}`);
+  }
+  return response.json() as Promise<WalletResponse>;
+}
+
 export const api = {
   status: () => getJson<StatusResponse>('/status'),
   positions: () => getJson<PositionsResponse>('/positions'),
   trades: () => getJson<TradesResponse>('/trades'),
   performance: () => getJson<PerformanceResponse>('/performance'),
+  wallet: getWallet,
 };
 
 export function wsUrl(): string {

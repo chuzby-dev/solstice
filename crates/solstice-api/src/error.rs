@@ -10,12 +10,16 @@ use thiserror::Error;
 pub enum ApiError {
     #[error("not found: {0}")]
     NotFound(String),
+
+    #[error("upstream error: {0}")]
+    Upstream(String),
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match &self {
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
+            ApiError::Upstream(_) => StatusCode::BAD_GATEWAY,
         };
         (
             status,
@@ -43,5 +47,11 @@ mod tests {
     fn test_not_found_body_carries_message() {
         let err = ApiError::NotFound("order abc123".to_string());
         assert_eq!(err.to_string(), "not found: order abc123");
+    }
+
+    #[test]
+    fn test_upstream_maps_to_502() {
+        let response = ApiError::Upstream("RPC timed out".to_string()).into_response();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     }
 }

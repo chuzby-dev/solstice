@@ -961,6 +961,56 @@ this pass attempted.
 
 ---
 
+## [0.1.0-alpha] - 2026-07-21 (Read-only wallet: address, balance, deposit view)
+
+### New: `WalletFile` (`solstice-blockchain`)
+
+Local keypair file management, same JSON format the devnet examples
+already used (and interoperable with `solana-keygen`): `generate()` (never
+overwrites an existing file — the point of a wallet file is that it might
+hold real funds), `exists()`, `pubkey()` (safe to log/display), and
+`load_keypair()` (returns the private key — used only when code is about
+to sign something, never logged). Also added
+`SolanaRpcClient::get_balance`, unlike `get_account` returning `Ok(0)` for
+a never-funded address rather than `AccountNotFound`, matching what a
+wallet balance check actually wants.
+
+### New: read-only `/api/v1/wallet` endpoint and dashboard page
+
+`solstice-api` gained an optional `WalletState` (public key + RPC client
+only — no signing capability reaches this server at all) wired in via a
+new `WALLET_KEYPAIR_PATH` env var. `GET /api/v1/wallet` returns the
+address and current SOL balance, or `404` if unconfigured; an unreachable
+RPC now correctly reports `502` via a new `ApiError::Upstream` variant
+(previously `ApiError` had exactly one variant, `NotFound`, and nothing
+used it for anything but "not found" — this is the first real use of a
+distinct upstream-failure status). Dashboard gained a matching Wallet page:
+balance, a copyable deposit address, and explicit copy stating this server
+can only read the balance and cannot send anything.
+
+**Explicit design boundary, not just an implementation detail**: there is
+no write/send endpoint anywhere in this API, and none is planned to be
+added without the user directly triggering each send. `WalletState` is
+public-key-only by construction — the API server process never loads a
+private key, so there's nothing here that *could* sign a transaction even
+if a route existed to ask it to.
+
+**Verified live**: ran `serve` with `WALLET_KEYPAIR_PATH` pointed at the
+devnet-funded wallet from the previous entry
+(`CAxwjUEH7XgataKcfihGwzNWswqXsLtVgqpHjVLR9K3f`) and `HELIUS_RPC_URL`
+pointed at devnet — `/api/v1/wallet` correctly returned its real balance
+(9.99999 SOL, reflecting the 1-lamport test transfer from the prior dry
+run), and the dashboard's Wallet page rendered it correctly with a working
+copy-address button.
+
+**Verified end to end**: `cargo fmt --check`, `cargo clippy --workspace
+--all-targets --all-features -D warnings`, and `cargo test --workspace`
+all pass clean (5 new backend tests: wallet file generate/load/overwrite-
+refusal/error-handling, plus wallet-endpoint 404/502 cases); `tsc -b &&
+vite build` passes clean on the dashboard.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-20
 
 ### Implementation Started

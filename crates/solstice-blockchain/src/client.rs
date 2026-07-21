@@ -257,6 +257,39 @@ impl SolanaRpcClient {
         ))
     }
 
+    /// Fetch an account's SOL balance in lamports, trying each endpoint in
+    /// priority order. Unlike [`Self::get_account`], a never-funded address
+    /// returns `Ok(0)` rather than [`BlockchainError::AccountNotFound`] --
+    /// the natural behavior for "what's this wallet's balance," where an
+    /// empty wallet is a normal state, not an error.
+    pub async fn get_balance(&self, pubkey: &Pubkey) -> BlockchainResult<u64> {
+        let max_attempts = self.config.max_retries.max(1);
+        let mut last_error: Option<String> = None;
+
+        for _ in 0..max_attempts {
+            let endpoint = self.get_active_endpoint()?;
+            let rpc = self.build_rpc_client(&endpoint);
+            let call_start = Instant::now();
+
+            match rpc.get_balance(pubkey).await {
+                Ok(lamports) => {
+                    let latency_ms = call_start.elapsed().as_secs_f64() * 1000.0;
+                    self.record_success(&endpoint, latency_ms)?;
+                    return Ok(lamports);
+                }
+                Err(e) => {
+                    let message = e.to_string();
+                    self.record_error(&endpoint, message.clone())?;
+                    last_error = Some(message);
+                }
+            }
+        }
+
+        Err(BlockchainError::RpcError(
+            last_error.unwrap_or_else(|| "all RPC attempts failed".to_string()),
+        ))
+    }
+
     /// Fetch a recent blockhash, trying each endpoint in priority order.
     pub async fn get_latest_blockhash(&self) -> BlockchainResult<Hash> {
         let max_attempts = self.config.max_retries.max(1);
@@ -442,6 +475,29 @@ mod tests {
             SolanaRpcClient::with_endpoints(vec!["http://127.0.0.1:1".to_string()]).unwrap();
         let result = client.get_latest_blockhash().await;
         assert!(matches!(result, Err(BlockchainError::RpcError(_))));
+    }
+
+    #[tokio::test]
+    async fn test_get_balance_fails_cleanly_when_unreachable() {
+        let client =
+            SolanaRpcClient::with_endpoints(vec!["http://127.0.0.1:1".to_string()]).unwrap();
+        let result = client.get_balance(&Pubkey::default()).await;
+        assert!(matches!(result, Err(BlockchainError::RpcError(_))));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live, reachable Solana RPC endpoint"]
+    async fn test_get_balance_live() {
+        // System program: always exists, balance is well-defined (zero or
+        // more), on any real cluster.
+        let client =
+            SolanaRpcClient::with_endpoints(
+                vec!["https://api.mainnet-beta.solana.com".to_string()],
+            )
+            .unwrap();
+        // Just confirming the call succeeds and returns a sane type;
+        // the exact balance isn't asserted since it can change.
+        let _balance = client.get_balance(&Pubkey::default()).await.unwrap();
     }
 
     #[tokio::test]

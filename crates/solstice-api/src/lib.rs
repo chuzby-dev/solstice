@@ -14,7 +14,7 @@ pub mod websocket;
 
 pub use error::{ApiError, ApiResult};
 pub use server::ApiServer;
-pub use state::AppState;
+pub use state::{AppState, WalletState};
 
 #[cfg(test)]
 mod tests {

@@ -6,6 +6,7 @@ const NAV_ITEMS = [
   { to: '/positions', label: 'Positions' },
   { to: '/trades', label: 'Trades' },
   { to: '/performance', label: 'Performance' },
+  { to: '/wallet', label: 'Wallet' },
 ];
 
 function ConnectionBadge({ state }: { state: ConnectionState }) {

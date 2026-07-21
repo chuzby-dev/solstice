@@ -3,6 +3,12 @@
 // Kept in sync by hand for now; if the API grows an OpenAPI spec, generate
 // these instead.
 
+export interface WalletResponse {
+  address: string;
+  balance_lamports: number;
+  balance_sol: number;
+}
+
 export interface StatusResponse {
   status: string;
   monitored_pairs: string[];

@@ -10,8 +10,10 @@ description = "REST and WebSocket API exposing platform state"
 
 [dependencies]
 solstice-core = { path = "../solstice-core" }
+solstice-blockchain = { path = "../solstice-blockchain" }
 solstice-execution = { path = "../solstice-execution" }
 solstice-simulation = { path = "../solstice-simulation" }
+solana-sdk = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -26,10 +28,8 @@ dotenvy = "0.15"
 
 [dev-dependencies]
 tokio-test = { workspace = true }
-solstice-blockchain = { path = "../solstice-blockchain" }
 solstice-dex = { path = "../solstice-dex" }
 solstice-strategy = { path = "../solstice-strategy" }
-solana-sdk = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 tokio-tungstenite = "0.24"
