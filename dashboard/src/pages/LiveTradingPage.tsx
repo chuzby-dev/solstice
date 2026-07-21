@@ -85,6 +85,11 @@ function describeLiveEvent(event: LiveEvent): { text: string; tone: 'neutral' | 
         text: `ARB FAILED (${event.leg} leg) on ${event.pair_label}: ${event.reason}`,
         tone: 'critical',
       };
+    case 'UntrackedBalanceAdopted':
+      return {
+        text: `Adopted untracked ${event.pair_label} balance: ${event.quantity.toFixed(6)} (~${formatUsd(event.estimated_usd)}) — now tracked and eligible to cycle back to quote`,
+        tone: 'warning',
+      };
     case 'TickCompleted':
       return { text: `Tick complete — ${event.signal_count} signal(s)`, tone: 'neutral' };
   }

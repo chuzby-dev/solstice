@@ -6,6 +6,60 @@
 
 ---
 
+## [0.1.0-alpha] - 2026-07-22 (Continuous capital cycling + untracked-balance reconciliation)
+
+### Problem
+
+The user wants the cross-DEX arb executor to keep auto-trading back and
+forth continuously -- spend USDC for SOL, then immediately cycle that SOL
+back to USDC on the next opportunity, repeatedly, with the same capital.
+Two things stood in the way: `evaluate_cross_dex_arbitrage` treated any
+pair with an already-open position as "leave it alone" (skip), so a
+position from a failed sell leg just sat there until a stop-loss/take-profit
+threshold happened to trigger, rather than actively retrying the flatten;
+and the ~0.19 SOL stranded by the earlier RPC-lag incident had no tracked
+position at all, so it was invisible to the engine and would never
+re-enter the cycle on its own.
+
+### Fix
+
+`evaluate_cross_dex_arbitrage` now treats each configured pair as either
+flat (look for a fresh buy-low/sell-high opportunity, as before) or
+holding inventory -- for *any* reason: this tick's own buy whose sell
+leg hasn't landed, a prior failed sell leg, or an adopted untracked
+balance -- in which case it now retries flattening that position back to
+quote **every tick** via the existing generic `close_position` (the same
+path stop-loss/take-profit already use), instead of only reacting to a
+price threshold. Added `reconcile_untracked_balance`, called at the top
+of each pair's evaluation: if there's an on-chain `base_mint` balance
+beyond dust with no matching tracked position, it's adopted as one
+(entry price estimated from the current best quote, since the real
+historical fill isn't reliably recoverable here -- acceptable since the
+goal is getting it back into the flatten cycle, not exact P&L
+attribution) and protected by stop-loss/take-profit from that point on.
+New `LiveEvent::UntrackedBalanceAdopted`, surfaced on the dashboard.
+
+Net effect: capital held by the arb executor no longer gets stuck as a
+one-off position waiting for a price move -- every tick, it's either
+being put to work on a new spread or actively working its way back to
+quote.
+
+### Verified
+
+`cargo fmt --all`, `cargo clippy --workspace --lib --bins --tests
+--all-features -D warnings`, `cargo test --workspace` (`--exclude
+solstice-api` plus `-p solstice-api --lib` separately) all pass clean.
+`npx tsc --noEmit` in `dashboard/` passes clean. Replaced
+`test_evaluate_cross_dex_arbitrage_skips_pair_with_open_position` (whose
+premise no longer holds) with
+`test_evaluate_cross_dex_arbitrage_retries_closing_open_position`
+(confirms a close attempt fires instead of a skip) and added
+`test_reconcile_untracked_balance_is_noop_when_position_already_tracked`
+(confirms no network I/O and no double-counting once a position already
+exists).
+
+---
+
 ## [0.1.0-alpha] - 2026-07-22 (Two real cross-DEX arb incidents: RPC-lag false failure, then wrong-sized attempt)
 
 ### Incident 1: "buy leg landed but no base token balance increase was observed"

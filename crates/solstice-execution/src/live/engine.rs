@@ -129,6 +129,18 @@ pub enum LiveEvent {
         leg: String,
         reason: String,
     },
+    /// An on-chain base-token balance for an arb-configured pair was
+    /// found with no matching tracked position -- e.g. a prior sell leg
+    /// that failed, or a balance read that raced ahead of a since-fixed
+    /// buy confirmation (see the read-consistency note on
+    /// `CrossDexArbFailed`'s "buy" leg). Adopted as a tracked position so
+    /// it's eligible to be flattened back to quote and protected by
+    /// stop-loss/take-profit, rather than sitting invisible forever.
+    UntrackedBalanceAdopted {
+        pair_label: String,
+        quantity: f64,
+        estimated_usd: f64,
+    },
     TickCompleted {
         timestamp: DateTime<Utc>,
         signal_count: usize,
@@ -1125,10 +1137,17 @@ impl LiveTradingEngine {
     }
 
     /// Runs the cross-DEX arbitrage executor over every configured pair,
-    /// if armed (`cross_dex_arb_enabled`). Skips any pair with an already
-    /// open position -- one attempt at a time per pair, so a failed
-    /// second leg's tracked inventory (see `execute_cross_dex_arb`) isn't
-    /// compounded by a fresh attempt on top of it.
+    /// if armed (`cross_dex_arb_enabled`). The intent is for capital to
+    /// keep cycling between quote and base rather than sitting still:
+    /// each pair is either flat (no tracked position, so this looks for
+    /// a fresh buy-low/sell-high opportunity) or holding inventory (a
+    /// buy whose sell leg hasn't landed yet -- from this tick's own
+    /// attempt, a prior failed sell leg, or an on-chain balance adopted
+    /// by `reconcile_untracked_balance` below), in which case this keeps
+    /// retrying the flatten-back-to-quote every tick via the existing
+    /// generic `close_position` (the same path stop-loss/take-profit
+    /// use) rather than leaving it stuck until some price threshold is
+    /// crossed.
     async fn evaluate_cross_dex_arbitrage(&self) {
         let (cross_dex_arb_enabled, min_spread) = {
             let config = self.config.lock().expect("config lock poisoned");
@@ -1140,12 +1159,21 @@ impl LiveTradingEngine {
 
         for pair in self.pairs.iter().copied() {
             let token_pair = TokenPair::new(pair.base_mint, pair.quote_mint);
-            if self
+
+            self.reconcile_untracked_balance(&pair).await;
+
+            let existing_position = self
                 .positions
                 .lock()
                 .expect("positions lock poisoned")
-                .contains_key(&token_pair)
-            {
+                .get(&token_pair)
+                .map(|p| p.id);
+            if let Some(position_id) = existing_position {
+                self.close_position(
+                    position_id,
+                    "cross-dex arb: cycling capital back to quote".to_string(),
+                )
+                .await;
                 continue;
             }
 
@@ -1166,6 +1194,91 @@ impl LiveTradingEngine {
             });
             self.execute_cross_dex_arb(&pair, opportunity).await;
         }
+    }
+
+    /// Adopts an untracked on-chain `pair.base_mint` balance as a tracked
+    /// position, if one exists beyond dust. No-op if a position is
+    /// already tracked for this pair -- this only recovers from gaps
+    /// (inventory left by a failed sell leg or, before the balance-read
+    /// retry fix, a buy whose confirmation raced a lagging RPC read),
+    /// never double-counts. The entry price is estimated from the
+    /// current best quote, not the real historical fill -- that isn't
+    /// reliably recoverable here, and for the purpose of flattening this
+    /// back to quote (via `close_position` in the caller) an approximate
+    /// entry is enough; it only affects realized-P&L bookkeeping and
+    /// stop-loss/take-profit timing until the flatten attempt lands.
+    async fn reconcile_untracked_balance(&self, pair: &LiveTradedPair) {
+        let token_pair = TokenPair::new(pair.base_mint, pair.quote_mint);
+        if self
+            .positions
+            .lock()
+            .expect("positions lock poisoned")
+            .contains_key(&token_pair)
+        {
+            return;
+        }
+
+        let Ok(balance_raw) = self
+            .rpc
+            .get_token_balance(&self.wallet_pubkey, &pair.base_mint)
+            .await
+        else {
+            return;
+        };
+        // Ignore dust (rent-exempt reserve noise, rounding) so this
+        // doesn't spawn a phantom position worth a fraction of a cent.
+        let dust_threshold_raw = 10u64.pow(pair.base_decimals as u32) / 1000;
+        if balance_raw <= dust_threshold_raw {
+            return;
+        }
+
+        let slippage_bps = self
+            .config
+            .lock()
+            .expect("config lock poisoned")
+            .cross_dex_max_slippage_bps;
+        let Ok(client) = self.dex.get_client("Jupiter") else {
+            return;
+        };
+        let request = QuoteRequest::new(
+            pair.base_mint,
+            pair.quote_mint,
+            pair.reference_amount,
+            slippage_bps,
+        );
+        let Ok(quote) = client.get_quote(&request).await else {
+            return;
+        };
+        let price = pair_price(pair, &quote);
+        if price <= 0.0 {
+            return;
+        }
+
+        let quantity = balance_raw as f64 / 10f64.powi(pair.base_decimals as i32);
+        let allocated_usd = quantity * price;
+
+        self.positions
+            .lock()
+            .expect("positions lock poisoned")
+            .insert(
+                token_pair,
+                LivePosition {
+                    id: PositionId::new(),
+                    pair: token_pair,
+                    quantity_raw: balance_raw,
+                    entry_price: price,
+                    current_price: price,
+                    allocated_usd,
+                    opened_at: Utc::now(),
+                },
+            );
+        *self.capital_deployed_usd.lock().expect("lock poisoned") += allocated_usd;
+
+        self.emit(LiveEvent::UntrackedBalanceAdopted {
+            pair_label: pair.label.to_string(),
+            quantity,
+            estimated_usd: allocated_usd,
+        });
     }
 
     /// Buys `pair.base_mint` on `opportunity.buy_dex` then immediately
@@ -2075,15 +2188,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_evaluate_cross_dex_arbitrage_skips_pair_with_open_position() {
-        // Even if armed, a pair with an already-open position must be
-        // skipped before any quoting happens -- otherwise a failed
-        // second leg's tracked inventory (see `execute_cross_dex_arb`)
-        // could be compounded by a fresh attempt on top of it. Verified
-        // indirectly: this would otherwise attempt a network quote
-        // against the unreachable test RPC endpoint and fail loudly
-        // rather than silently continuing, so a clean no-event return
-        // confirms the skip fired first.
+    async fn test_evaluate_cross_dex_arbitrage_retries_closing_open_position() {
+        // A pair with an already-open position must attempt to flatten
+        // it back to quote (via `close_position`), not look for a new
+        // buy opportunity on top of it -- capital should keep cycling
+        // rather than sitting stuck. On a disabled engine, `close_position`
+        // takes its own no-network "would close" path, so this is safe
+        // to assert without touching the (unreachable) test RPC endpoint.
         let pair = test_pair();
         let token_pair = TokenPair::new(pair.base_mint, pair.quote_mint);
         let engine = test_engine(pair, 50.0);
@@ -2105,9 +2216,49 @@ mod tests {
         let mut events = engine.subscribe();
         engine.evaluate_cross_dex_arbitrage().await;
 
+        let mut saw_close_attempt = false;
+        while let Ok(event) = events.try_recv() {
+            if let LiveEvent::SignalSkipped { reason, .. } = event {
+                if reason.contains("cross-dex arb") {
+                    saw_close_attempt = true;
+                }
+            }
+        }
+        assert!(
+            saw_close_attempt,
+            "expected an attempt to close the open position back to quote"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_untracked_balance_is_noop_when_position_already_tracked() {
+        // Must not touch the network (and thus the unreachable test RPC
+        // endpoint) once a position already exists for the pair -- the
+        // whole point is to recover *gaps*, never double-count.
+        let pair = test_pair();
+        let token_pair = TokenPair::new(pair.base_mint, pair.quote_mint);
+        let engine = test_engine(pair, 50.0);
+
+        engine.positions.lock().unwrap().insert(
+            token_pair,
+            LivePosition {
+                id: PositionId::new(),
+                pair: token_pair,
+                quantity_raw: 1_000_000_000,
+                entry_price: 100.0,
+                current_price: 100.0,
+                allocated_usd: 10.0,
+                opened_at: Utc::now(),
+            },
+        );
+
+        let mut events = engine.subscribe();
+        engine.reconcile_untracked_balance(&pair).await;
+
         assert!(
             events.try_recv().is_err(),
-            "expected the already-positioned pair to be skipped with no events"
+            "expected no events when a position is already tracked"
         );
+        assert_eq!(engine.positions.lock().unwrap().len(), 1);
     }
 }

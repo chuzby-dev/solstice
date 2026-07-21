@@ -193,4 +193,5 @@ export type LiveEvent =
       sell_signature: string | null;
     }
   | { type: 'CrossDexArbFailed'; pair_label: string; leg: string; reason: string }
+  | { type: 'UntrackedBalanceAdopted'; pair_label: string; quantity: number; estimated_usd: number }
   | { type: 'TickCompleted'; timestamp: string; signal_count: number };
