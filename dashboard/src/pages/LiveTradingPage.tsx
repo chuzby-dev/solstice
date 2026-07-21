@@ -45,6 +45,11 @@ function describeLiveEvent(event: LiveEvent): { text: string; tone: 'neutral' | 
         text: `Minimum confidence to act changed to ${(event.min_confidence * 100).toFixed(0)}%`,
         tone: 'neutral',
       };
+    case 'StrategiesEnabledChanged':
+      return {
+        text: `Strategy signals (SMA/SpreadArb) ${event.strategies_enabled ? 'enabled' : 'disabled'}`,
+        tone: 'neutral',
+      };
     case 'TakeProfitPercentChanged':
       return {
         text: `Take-profit target changed to ${(event.take_profit_percent * 100).toFixed(0)}%`,
@@ -193,6 +198,18 @@ export function LiveTradingPage() {
     }
   };
 
+  const handleToggleStrategies = async (enabled: boolean) => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api.liveSetStrategiesEnabled(enabled);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleToggleCrossDexArb = async (armed: boolean) => {
     setBusy(true);
     setActionError(null);
@@ -256,6 +273,11 @@ export function LiveTradingPage() {
               value={`${(status.min_confidence * 100).toFixed(0)}%`}
             />
             <StatTile
+              label="Strategy signals"
+              value={status.strategies_enabled ? 'On' : 'Off'}
+              tone={status.strategies_enabled ? 'neutral' : 'good'}
+            />
+            <StatTile
               label="Take-profit target"
               value={`${(status.take_profit_percent * 100).toFixed(0)}%`}
             />
@@ -284,6 +306,25 @@ export function LiveTradingPage() {
                 disabled={busy}
                 activeColor="critical"
               />
+            </div>
+
+            {/* Strategy signals */}
+            <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-1)] p-4">
+              <ToggleSwitch
+                label={
+                  status.strategies_enabled
+                    ? 'Strategy signals (SMA/SpreadArb) are ON'
+                    : 'Strategy signals (SMA/SpreadArb) are off'
+                }
+                checked={status.strategies_enabled}
+                onChange={handleToggleStrategies}
+                disabled={busy}
+                activeColor="warning"
+              />
+              <p className="mt-2 text-xs text-[var(--text-muted)]">
+                Turn off to run <strong>only</strong> the cross-DEX arbitrage executor below,
+                without SMA/SpreadArb's directional bets also trading.
+              </p>
             </div>
 
             {/* Capital cap */}

@@ -19,6 +19,12 @@ pub struct LiveConfigRequest {
     pub max_capital_usd: Option<f64>,
     /// Minimum signal confidence (0.0-1.0) required to act on a signal.
     pub min_confidence: Option<f64>,
+    /// Enables/disables the strategy-driven signal pipeline
+    /// (SMA/SpreadArb), independent of the main enable/disable kill
+    /// switch and of `cross_dex_arb_enabled` -- e.g. `false` here plus
+    /// `cross_dex_arb_enabled: true` runs only the cross-DEX arbitrage
+    /// executor.
+    pub strategies_enabled: Option<bool>,
     /// Fractional gain (e.g. `0.05` = 5%) at which an open position
     /// auto-closes.
     pub take_profit_percent: Option<f64>,

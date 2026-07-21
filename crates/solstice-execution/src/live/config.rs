@@ -43,6 +43,17 @@ pub struct LiveTradingConfig {
     /// how it would otherwise score. Adjustable at runtime via
     /// `LiveTradingEngine::set_min_confidence`.
     pub min_confidence: f64,
+    /// Whether the strategy-driven signal pipeline (currently
+    /// `SimpleMovingAverageStrategy`/`SpreadArbitrageStrategy`) runs at
+    /// all. `true` by default -- this only exists so a caller can run
+    /// *only* the cross-DEX arbitrage executor (`cross_dex_arb_enabled`)
+    /// without also taking the directional bets those strategies place,
+    /// without having to remove them from the engine's `StrategyManager`
+    /// entirely. Independent of the main `enable`/`disable` kill switch:
+    /// with this `false` and `cross_dex_arb_enabled: true`, an enabled
+    /// engine trades only arbitrage opportunities. Adjustable at runtime
+    /// via `LiveTradingEngine::set_strategies_enabled`.
+    pub strategies_enabled: bool,
     pub risk_limits: RiskLimits,
     pub kelly_fraction: f64,
     pub default_win_loss_ratio: f64,
@@ -123,6 +134,7 @@ impl Default for LiveTradingConfig {
         LiveTradingConfig {
             max_capital_usd: 50.0,
             min_confidence: 0.65,
+            strategies_enabled: true,
             risk_limits: RiskLimits {
                 position: crate::risk::PositionLimits {
                     max_single_position_usd: 50,

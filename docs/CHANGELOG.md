@@ -6,6 +6,48 @@
 
 ---
 
+## [0.1.0-alpha] - 2026-07-21 (Independent strategies on/off switch)
+
+### Problem
+
+With cross-DEX arbitrage now armable, the user asked to run *only* arb --
+not also have SMA/SpreadArb's directional bets trading. Previously there
+was no way to do that at runtime: `tick()` unconditionally called
+`strategy_manager.evaluate_all(...)` and acted on whatever it returned,
+with no independent gate. The only way to actually stop those strategies
+was to not register them at all in `serve.rs`, which needs a rebuild
+every time -- not something adjustable from the dashboard.
+
+### Fix
+
+Added `strategies_enabled: bool` to `LiveTradingConfig` (default `true`,
+preserving existing behavior). `tick()` now reads it fresh each call and
+skips `strategy_manager.evaluate_all`/`act_on_signal` entirely when
+`false`, while `evaluate_stop_losses`, `evaluate_cross_dex_arbitrage`,
+and the main `enable`/`disable` kill switch are all unaffected --
+independent gates, so `strategies_enabled: false` +
+`cross_dex_arb_enabled: true` on an enabled engine trades only arbitrage
+opportunities. Wired the same way as every other live control:
+`set_strategies_enabled`, `LiveEvent::StrategiesEnabledChanged`,
+`LiveStatusSnapshot` field, `POST /api/v1/live/config`, a new stat tile,
+and a `ToggleSwitch` card on the dashboard right next to the main kill
+switch.
+
+### Verified
+
+`cargo fmt --all`, `cargo clippy --workspace --lib --bins --tests
+--all-features -D warnings`, `cargo test --workspace` (`--exclude
+solstice-api` plus `-p solstice-api --lib` separately) all pass clean.
+`npx tsc --noEmit` in `dashboard/` passes clean. New test:
+`test_set_strategies_enabled_updates_status`. The gate itself lives
+inline in `tick()`, which (like `execute_planned_trade`/`find_arb_opportunity`)
+touches the network via `sample_market`, so it isn't unit-tested end to
+end -- consistent with this codebase's existing pattern of testing pure
+gating/config logic directly and leaving network-dependent paths to
+integration/manual verification.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-21 (0.5% default spread + toggle-switch arm controls)
 
 ### Changes

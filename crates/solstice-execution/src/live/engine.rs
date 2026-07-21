@@ -90,6 +90,9 @@ pub enum LiveEvent {
     MinConfidenceChanged {
         min_confidence: f64,
     },
+    StrategiesEnabledChanged {
+        strategies_enabled: bool,
+    },
     TakeProfitPercentChanged {
         take_profit_percent: f64,
     },
@@ -148,6 +151,7 @@ pub struct LiveStatusSnapshot {
     pub wallet_address: String,
     pub max_capital_usd: f64,
     pub min_confidence: f64,
+    pub strategies_enabled: bool,
     pub take_profit_percent: f64,
     pub cross_dex_arb_enabled: bool,
     pub cross_dex_min_spread: f64,
@@ -354,6 +358,17 @@ impl LiveTradingEngine {
         self.emit(LiveEvent::MinConfidenceChanged { min_confidence });
     }
 
+    /// Enable/disable the strategy-driven signal pipeline
+    /// (SMA/SpreadArb), independent of the main kill switch and of
+    /// `cross_dex_arb_enabled`. Read fresh from config every `tick`, so a
+    /// change takes effect on the next tick.
+    pub fn set_strategies_enabled(&self, strategies_enabled: bool) {
+        let mut config = self.config.lock().expect("config lock poisoned");
+        config.strategies_enabled = strategies_enabled;
+        drop(config);
+        self.emit(LiveEvent::StrategiesEnabledChanged { strategies_enabled });
+    }
+
     /// Set the fractional gain at which an open position auto-closes.
     /// Read fresh from config on every `evaluate_stop_losses` call, so a
     /// change takes effect on the next tick, not on next restart.
@@ -423,6 +438,7 @@ impl LiveTradingEngine {
             wallet_address: self.wallet_pubkey.to_string(),
             max_capital_usd: config.max_capital_usd,
             min_confidence: config.min_confidence,
+            strategies_enabled: config.strategies_enabled,
             take_profit_percent: config.take_profit_percent,
             cross_dex_arb_enabled: config.cross_dex_arb_enabled,
             cross_dex_min_spread: config.cross_dex_min_spread,
@@ -468,11 +484,19 @@ impl LiveTradingEngine {
         self.evaluate_stop_losses(&snapshot).await;
         self.evaluate_cross_dex_arbitrage().await;
 
+        let strategies_enabled = self
+            .config
+            .lock()
+            .expect("config lock poisoned")
+            .strategies_enabled;
         let portfolio_state = self.portfolio_state();
-        let signals = self
-            .strategy_manager
-            .evaluate_all(&snapshot, &portfolio_state)
-            .await;
+        let signals = if strategies_enabled {
+            self.strategy_manager
+                .evaluate_all(&snapshot, &portfolio_state)
+                .await
+        } else {
+            Vec::new()
+        };
 
         for signal in &signals {
             if let Some(pair) = signal_pair(signal) {
@@ -1610,6 +1634,7 @@ mod tests {
         LiveTradingConfig {
             max_capital_usd,
             min_confidence: 0.0,
+            strategies_enabled: true,
             risk_limits: crate::risk::RiskLimits {
                 position: PositionLimits {
                     max_single_position_usd: max_capital_usd as u64,
@@ -1912,6 +1937,16 @@ mod tests {
 
         engine.set_take_profit_percent(0.1);
         assert_eq!(engine.status().take_profit_percent, 0.1);
+    }
+
+    #[test]
+    fn test_set_strategies_enabled_updates_status() {
+        let pair = test_pair();
+        let engine = test_engine(pair, 50.0);
+        assert!(engine.status().strategies_enabled);
+
+        engine.set_strategies_enabled(false);
+        assert!(!engine.status().strategies_enabled);
     }
 
     #[tokio::test]

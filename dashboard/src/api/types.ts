@@ -129,6 +129,7 @@ export interface LiveStatusResponse {
   wallet_address: string;
   max_capital_usd: number;
   min_confidence: number;
+  strategies_enabled: boolean;
   take_profit_percent: number;
   cross_dex_arb_enabled: boolean;
   cross_dex_min_spread: number;
@@ -165,6 +166,7 @@ export type LiveEvent =
   | { type: 'LiveTradingDisabled' }
   | { type: 'MaxCapitalChanged'; max_capital_usd: number }
   | { type: 'MinConfidenceChanged'; min_confidence: number }
+  | { type: 'StrategiesEnabledChanged'; strategies_enabled: boolean }
   | { type: 'TakeProfitPercentChanged'; take_profit_percent: number }
   | { type: 'CrossDexArbEnabledChanged'; cross_dex_arb_enabled: boolean }
   | { type: 'CrossDexMinSpreadChanged'; cross_dex_min_spread: number }

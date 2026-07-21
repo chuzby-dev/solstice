@@ -257,6 +257,10 @@ pub async fn live_set_config(
         live.set_min_confidence(min_confidence);
     }
 
+    if let Some(strategies_enabled) = body.strategies_enabled {
+        live.set_strategies_enabled(strategies_enabled);
+    }
+
     if let Some(take_profit_percent) = body.take_profit_percent {
         if !take_profit_percent.is_finite() || take_profit_percent <= 0.0 {
             return Err(ApiError::BadRequest(

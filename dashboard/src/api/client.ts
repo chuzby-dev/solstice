@@ -62,6 +62,8 @@ export const api = {
     postJson<LiveStatusResponse>('/live/config', { max_capital_usd }),
   liveSetMinConfidence: (min_confidence: number) =>
     postJson<LiveStatusResponse>('/live/config', { min_confidence }),
+  liveSetStrategiesEnabled: (strategies_enabled: boolean) =>
+    postJson<LiveStatusResponse>('/live/config', { strategies_enabled }),
   liveSetTakeProfitPercent: (take_profit_percent: number) =>
     postJson<LiveStatusResponse>('/live/config', { take_profit_percent }),
   liveSetCrossDexArbEnabled: (cross_dex_arb_enabled: boolean) =>
