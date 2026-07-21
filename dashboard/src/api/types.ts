@@ -132,6 +132,7 @@ export interface LiveStatusResponse {
   take_profit_percent: number;
   cross_dex_arb_enabled: boolean;
   cross_dex_min_spread: number;
+  cross_dex_max_slippage_bps: number;
   capital_deployed_usd: number;
   capital_available_usd: number;
   realized_pnl_usd: number;
@@ -167,6 +168,7 @@ export type LiveEvent =
   | { type: 'TakeProfitPercentChanged'; take_profit_percent: number }
   | { type: 'CrossDexArbEnabledChanged'; cross_dex_arb_enabled: boolean }
   | { type: 'CrossDexMinSpreadChanged'; cross_dex_min_spread: number }
+  | { type: 'CrossDexMaxSlippageChanged'; cross_dex_max_slippage_bps: number }
   | {
       type: 'CrossDexOpportunityDetected';
       pair_label: string;

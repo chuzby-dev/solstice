@@ -99,6 +99,9 @@ pub enum LiveEvent {
     CrossDexMinSpreadChanged {
         cross_dex_min_spread: f64,
     },
+    CrossDexMaxSlippageChanged {
+        cross_dex_max_slippage_bps: u32,
+    },
     CrossDexOpportunityDetected {
         pair_label: String,
         buy_dex: String,
@@ -148,6 +151,7 @@ pub struct LiveStatusSnapshot {
     pub take_profit_percent: f64,
     pub cross_dex_arb_enabled: bool,
     pub cross_dex_min_spread: f64,
+    pub cross_dex_max_slippage_bps: u32,
     pub capital_deployed_usd: f64,
     pub capital_available_usd: f64,
     pub realized_pnl_usd: f64,
@@ -388,6 +392,19 @@ impl LiveTradingEngine {
         });
     }
 
+    /// Set the per-leg slippage tolerance used only by the cross-DEX
+    /// arbitrage executor -- see `LiveTradingConfig::cross_dex_max_slippage_bps`'s
+    /// doc comment for why this is kept separate from the general
+    /// `slippage_bps` used by ordinary trades.
+    pub fn set_cross_dex_max_slippage_bps(&self, cross_dex_max_slippage_bps: u32) {
+        let mut config = self.config.lock().expect("config lock poisoned");
+        config.cross_dex_max_slippage_bps = cross_dex_max_slippage_bps;
+        drop(config);
+        self.emit(LiveEvent::CrossDexMaxSlippageChanged {
+            cross_dex_max_slippage_bps,
+        });
+    }
+
     fn pair_label(&self, pair: &TokenPair) -> String {
         self.pairs
             .iter()
@@ -409,6 +426,7 @@ impl LiveTradingEngine {
             take_profit_percent: config.take_profit_percent,
             cross_dex_arb_enabled: config.cross_dex_arb_enabled,
             cross_dex_min_spread: config.cross_dex_min_spread,
+            cross_dex_max_slippage_bps: config.cross_dex_max_slippage_bps,
             capital_deployed_usd,
             capital_available_usd: (config.max_capital_usd - capital_deployed_usd).max(0.0),
             realized_pnl_usd: *self.realized_pnl_usd.lock().expect("lock poisoned"),
@@ -1033,7 +1051,7 @@ impl LiveTradingEngine {
             .config
             .lock()
             .expect("config lock poisoned")
-            .slippage_bps;
+            .cross_dex_max_slippage_bps;
 
         let mut observations: Vec<(String, f64)> = Vec::with_capacity(3);
         for (name, has_pool) in [
@@ -1166,7 +1184,7 @@ impl LiveTradingEngine {
             }
             (
                 remaining_headroom.floor() as u64,
-                config.slippage_bps,
+                config.cross_dex_max_slippage_bps,
                 config.tip_lamports,
             )
         };
@@ -1621,6 +1639,7 @@ mod tests {
             take_profit_percent: 0.05,
             cross_dex_arb_enabled: false,
             cross_dex_min_spread: 0.015,
+            cross_dex_max_slippage_bps: 30,
             slippage_bps: 50,
             poll_interval: Duration::from_secs(3600),
             tip_lamports: None,
@@ -1952,6 +1971,16 @@ mod tests {
 
         engine.set_cross_dex_min_spread(0.03);
         assert_eq!(engine.status().cross_dex_min_spread, 0.03);
+    }
+
+    #[test]
+    fn test_set_cross_dex_max_slippage_bps_updates_status() {
+        let pair = test_pair();
+        let engine = test_engine(pair, 50.0);
+        assert_eq!(engine.status().cross_dex_max_slippage_bps, 30);
+
+        engine.set_cross_dex_max_slippage_bps(20);
+        assert_eq!(engine.status().cross_dex_max_slippage_bps, 20);
     }
 
     #[tokio::test]

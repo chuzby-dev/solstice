@@ -62,6 +62,11 @@ function describeLiveEvent(event: LiveEvent): { text: string; tone: 'neutral' | 
         text: `Cross-DEX min spread changed to ${(event.cross_dex_min_spread * 100).toFixed(2)}%`,
         tone: 'neutral',
       };
+    case 'CrossDexMaxSlippageChanged':
+      return {
+        text: `Cross-DEX per-leg slippage tolerance changed to ${(event.cross_dex_max_slippage_bps / 100).toFixed(2)}%`,
+        tone: 'neutral',
+      };
     case 'CrossDexOpportunityDetected':
       return {
         text: `Spread on ${event.pair_label}: buy ${event.buy_dex} @ $${event.buy_price.toFixed(4)}, sell ${event.sell_dex} @ $${event.sell_price.toFixed(4)} (${event.spread_percent.toFixed(2)}%)`,
@@ -96,6 +101,7 @@ export function LiveTradingPage() {
   const [minConfidenceInput, setMinConfidenceInput] = useState('');
   const [takeProfitInput, setTakeProfitInput] = useState('');
   const [crossDexSpreadInput, setCrossDexSpreadInput] = useState('');
+  const [crossDexSlippageInput, setCrossDexSlippageInput] = useState('');
   const [arbConfirmText, setArbConfirmText] = useState('');
   const [confirmText, setConfirmText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -166,6 +172,24 @@ export function LiveTradingPage() {
     try {
       await api.liveSetCrossDexMinSpread(percent / 100);
       setCrossDexSpreadInput('');
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSetCrossDexSlippage = async () => {
+    const percent = Number(crossDexSlippageInput);
+    if (!Number.isFinite(percent) || percent <= 0 || percent > 100) {
+      setActionError('Enter a valid positive percentage.');
+      return;
+    }
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api.liveSetCrossDexMaxSlippageBps(Math.round(percent * 100));
+      setCrossDexSlippageInput('');
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -271,6 +295,10 @@ export function LiveTradingPage() {
             <StatTile
               label="Cross-DEX min spread"
               value={`${(status.cross_dex_min_spread * 100).toFixed(2)}%`}
+            />
+            <StatTile
+              label="Cross-DEX per-leg slippage"
+              value={`${(status.cross_dex_max_slippage_bps / 100).toFixed(2)}%`}
             />
           </div>
 
@@ -430,6 +458,38 @@ export function LiveTradingPage() {
               <p className="mt-2 text-xs text-[var(--text-muted)]">
                 Minimum price gap between the cheapest and priciest DEX quote to attempt an
                 arbitrage trade. Default 1.5% -- set well above the cost of two separate swaps.
+              </p>
+            </div>
+
+            {/* Cross-DEX arbitrage per-leg slippage */}
+            <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-1)] p-4">
+              <div className="mb-3 text-sm font-medium text-[var(--text-secondary)]">
+                Cross-DEX per-leg slippage (
+                {(status.cross_dex_max_slippage_bps / 100).toFixed(2)}% currently)
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.05"
+                  value={crossDexSlippageInput}
+                  onChange={(e) => setCrossDexSlippageInput(e.target.value)}
+                  placeholder="e.g. 0.3"
+                  className="flex-1 rounded-md border border-[var(--border)] bg-[var(--page)] px-3 py-2 text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={handleSetCrossDexSlippage}
+                  disabled={busy || crossDexSlippageInput === ''}
+                  className="shrink-0 rounded-md border border-[var(--border)] px-3 py-2 text-sm font-medium hover:bg-[var(--border)] disabled:opacity-40"
+                >
+                  Save
+                </button>
+              </div>
+              <p className="mt-2 text-xs text-[var(--text-muted)]">
+                Max slippage tolerated on <em>each</em> leg -- separate from, and much tighter
+                than, the general trading slippage. Default 0.3%. Keep this well below half the
+                min spread above, or a "profitable" arb can slip into a real loss.
               </p>
             </div>
 

@@ -275,8 +275,18 @@ pub async fn live_set_config(
         live.set_cross_dex_min_spread(cross_dex_min_spread);
     }
 
-    // Applied after `cross_dex_min_spread` so a single request can both
-    // raise the threshold and arm the executor in one call.
+    if let Some(cross_dex_max_slippage_bps) = body.cross_dex_max_slippage_bps {
+        if cross_dex_max_slippage_bps == 0 || cross_dex_max_slippage_bps > 10_000 {
+            return Err(ApiError::BadRequest(
+                "cross_dex_max_slippage_bps must be between 1 and 10000".to_string(),
+            ));
+        }
+        live.set_cross_dex_max_slippage_bps(cross_dex_max_slippage_bps);
+    }
+
+    // Applied after `cross_dex_min_spread`/`cross_dex_max_slippage_bps` so
+    // a single request can tune the thresholds and arm the executor in
+    // one call.
     if let Some(cross_dex_arb_enabled) = body.cross_dex_arb_enabled {
         live.set_cross_dex_arb_enabled(cross_dex_arb_enabled);
     }

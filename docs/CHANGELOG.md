@@ -6,6 +6,47 @@
 
 ---
 
+## [0.1.0-alpha] - 2026-07-21 (Decouple cross-DEX arb slippage from general trading slippage)
+
+### Problem
+
+The user pushed back on the 1.5% default `cross_dex_min_spread`, suspecting
+real cross-DEX spreads run closer to 0.5%. That's a reasonable guess, but
+lowering the threshold alone would have been dangerous: `execute_cross_dex_arb`
+was reusing the engine's general `slippage_bps` (150bps = 1.5%, tuned for
+ordinary directional trades where a missed fill just means a skipped
+opportunity) as the per-leg tolerance for *both* arb legs. At a 0.5%
+spread, a trade that tolerates 1.5% slippage on each leg can lose money
+even when the detected spread was real -- the tolerance alone is 3x wider
+than the edge being captured.
+
+### Fix
+
+Added `cross_dex_max_slippage_bps` to `LiveTradingConfig`, decoupled from
+`slippage_bps`, default `30` (0.3% per leg, ~0.6% round-trip budget).
+`find_arb_opportunity` and `execute_cross_dex_arb` now read this instead
+of the general slippage setting. Wired end to end the same way as the
+other cross-DEX arb controls: `set_cross_dex_max_slippage_bps`,
+`LiveEvent::CrossDexMaxSlippageChanged`, `LiveStatusSnapshot` field,
+`POST /api/v1/live/config` (validates 1-10000bps), and a dedicated
+dashboard stat tile + input card with an explicit warning to keep it
+below half of `cross_dex_min_spread`.
+
+This doesn't itself change `cross_dex_min_spread` -- the user can now
+safely lower it (e.g. toward 0.5-0.7%) once satisfied with the tighter
+per-leg tolerance, without the two settings fighting each other the way
+they would have before this change.
+
+### Verified
+
+`cargo fmt --all`, `cargo clippy --workspace --lib --bins --tests
+--all-features -D warnings`, `cargo test --workspace` (`--exclude
+solstice-api` plus `-p solstice-api --lib` separately, live server still
+running) all pass clean. `npx tsc --noEmit` in `dashboard/` passes clean.
+New test: `test_set_cross_dex_max_slippage_bps_updates_status`.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-21 (Cross-DEX arbitrage executor)
 
 ### Problem

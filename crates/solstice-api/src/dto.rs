@@ -30,6 +30,9 @@ pub struct LiveConfigRequest {
     /// Minimum spread (e.g. `0.015` = 1.5%) required across registered
     /// DEXes before the cross-DEX arbitrage executor acts.
     pub cross_dex_min_spread: Option<f64>,
+    /// Per-leg slippage tolerance (basis points) for the cross-DEX
+    /// arbitrage executor -- separate from the general trading slippage.
+    pub cross_dex_max_slippage_bps: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]

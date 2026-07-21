@@ -83,6 +83,17 @@ pub struct LiveTradingConfig {
     /// on one leg, not two). Adjustable at runtime via
     /// `LiveTradingEngine::set_cross_dex_min_spread`.
     pub cross_dex_min_spread: f64,
+    /// Slippage tolerance applied to each leg of a cross-DEX arbitrage
+    /// trade, in basis points -- deliberately separate from
+    /// `slippage_bps` below (which is much wider, tuned for ordinary
+    /// directional trades where a missed fill just means a skipped
+    /// opportunity). Here, a loose tolerance can silently erase the
+    /// whole edge: if `cross_dex_min_spread` is set tight (say, 0.5%) but
+    /// each of the two legs can slip against the trade by more than that,
+    /// a "profitable" arb can net a real loss. Keep this well below
+    /// `cross_dex_min_spread` divided by two. Adjustable at runtime via
+    /// `LiveTradingEngine::set_cross_dex_max_slippage_bps`.
+    pub cross_dex_max_slippage_bps: u32,
     /// Slippage tolerance passed to Jupiter for both price sampling and
     /// execution quotes. `execute_planned_trade` re-fetches a quote right
     /// before submitting, but `JupiterClient::build_swap_instructions`
@@ -138,6 +149,7 @@ impl Default for LiveTradingConfig {
             take_profit_percent: 0.05,
             cross_dex_arb_enabled: false,
             cross_dex_min_spread: 0.015,
+            cross_dex_max_slippage_bps: 30,
             slippage_bps: 150,
             poll_interval: Duration::from_secs(15),
             tip_lamports: None,
