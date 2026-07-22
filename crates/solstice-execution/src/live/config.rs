@@ -118,7 +118,11 @@ pub struct LiveTradingConfig {
     /// real gate is `max(cross_dex_min_spread, 2 * cross_dex_max_slippage_bps
     /// + cross_dex_min_net_edge_bps)`, so raising the slippage tolerance
     /// automatically raises the spread required to trade instead of
-    /// silently eating into the margin. Adjustable at runtime via
+    /// silently eating into the margin. Default 30bps: a live $15 BONK/USDC
+    /// round trip landed with both legs confirmed error-free ("successful")
+    /// but still net-lost money once the actual executed prices and a
+    /// direct-RPC-fallback priority fee were accounted for -- 10bps left too
+    /// little room for that real-world drag. Adjustable at runtime via
     /// `LiveTradingEngine::set_cross_dex_min_net_edge_bps`.
     pub cross_dex_min_net_edge_bps: u32,
     /// Labels (`LiveTradedPair::label`) excluded from *new* trade
@@ -189,7 +193,7 @@ impl Default for LiveTradingConfig {
             cross_dex_arb_enabled: false,
             cross_dex_min_spread: 0.005,
             cross_dex_max_slippage_bps: 30,
-            cross_dex_min_net_edge_bps: 10,
+            cross_dex_min_net_edge_bps: 30,
             disabled_pairs: HashSet::new(),
             slippage_bps: 150,
             poll_interval: Duration::from_secs(15),

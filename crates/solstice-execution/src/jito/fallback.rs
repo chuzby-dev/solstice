@@ -43,16 +43,25 @@ pub async fn submit_with_fallback(
     confirm_timeout: Duration,
     poll_interval: Duration,
 ) -> JitoResult<SubmissionOutcome> {
-    if let Some(outcome) = try_jito(
-        jito,
-        primary_transactions,
-        tip_transaction,
-        confirm_timeout,
-        poll_interval,
-    )
-    .await
-    {
-        return Ok(outcome);
+    // Jito rejects every bundle that doesn't write-lock a tip account --
+    // there is no such thing as an untipped bundle. Without a
+    // `tip_transaction` this call is guaranteed to be rejected, so skip
+    // straight to direct RPC rather than paying for a network round trip
+    // (and the added latency) we already know will fail. This matters
+    // more than it looks: for the cross-DEX arb executor, that latency is
+    // real price-movement exposure between the two non-atomic legs.
+    if tip_transaction.is_some() {
+        if let Some(outcome) = try_jito(
+            jito,
+            primary_transactions,
+            tip_transaction,
+            confirm_timeout,
+            poll_interval,
+        )
+        .await
+        {
+            return Ok(outcome);
+        }
     }
 
     let mut signatures = Vec::with_capacity(primary_transactions.len());

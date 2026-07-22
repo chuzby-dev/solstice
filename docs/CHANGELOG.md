@@ -6,6 +6,67 @@
 
 ---
 
+## [0.1.0-alpha] - 2026-07-22 (Diagnose wallet-balance drain: real fees + tighter net-edge margin)
+
+### Problem
+
+User reported the bot showing "successful" trades while overall wallet
+balance kept declining. Pulled the actual on-chain transactions for the
+most recent BONK/USDC cross-DEX cycle directly via Helius RPC
+(`getTransaction`, jsonParsed) rather than trusting the engine's own
+reporting:
+- Buy leg: spent exactly $15.000000 USDC for BONK, fee 5,000 lamports.
+- Sell leg: received back $14.981334 USDC, fee **105,000 lamports** --
+  21x the base fee.
+- Net: -$0.0187 on the spread alone, plus ~$0.0085 in real SOL fees =
+  ~$0.027 total loss on a cycle where both legs landed with no on-chain
+  error (hence "successful" in the dashboard).
+
+Root cause of the elevated fee: server logs showed every single Jito
+bundle submission being rejected (`"must write lock at least one tip
+account"`, `"cannot lock any vote accounts"`) before falling back to
+direct RPC. `LiveTradingConfig::tip_lamports` defaults to `None` (by
+design -- see its doc comment), so every `execute_swap` call passes
+`tip: None`, meaning `submit_with_fallback` was building an untipped
+Jito bundle and attempting it anyway on *every single trade* --
+something guaranteed to be rejected, since Jito's protocol requires a
+tip account write-lock in every bundle. That wasted round trip both
+added latency (real price-movement exposure for the non-atomic legs)
+and left the direct-RPC fallback attaching its own priority fee to
+compete for landing, at ~20x the untipped base fee.
+
+Separately: `realized_pnl_usd` only nets USDC in vs USDC out -- it
+never touches the SOL balance, so none of this fee drag was visible in
+the dashboard's P&L number at all, only in the wallet's SOL balance
+declining silently in the background.
+
+### Fix
+
+`crates/solstice-execution/src/jito/fallback.rs`: `submit_with_fallback`
+now skips the Jito attempt entirely when `tip_transaction` is `None`,
+going straight to direct RPC -- since an untipped bundle is guaranteed
+to be rejected, there's no reason to pay for the round trip or the
+extra latency window.
+
+`crates/solstice-execution/src/live/config.rs`:
+`cross_dex_min_net_edge_bps` default raised 10bps -> 30bps -- 10bps
+left too little headroom for the real fee drag measured above (~20bps
+at $15 trade size just from this one cycle's elevated priority fee).
+
+### Verified
+
+`cargo fmt --all`, `cargo clippy --workspace --lib --bins --tests
+--all-features -- -D warnings`, `cargo test --workspace --exclude
+solstice-api` (102 execution tests) plus `cargo test -p solstice-api
+--lib` all pass. Confirmed no open positions before restarting `serve`;
+rebuilt, relaunched, and re-armed with the user's prior config
+(`max_capital_usd=$15`, `strategies_enabled=false`,
+`cross_dex_arb_enabled=true`, `enabled=true`) -- confirmed via
+`/api/v1/live/status` that `cross_dex_min_net_edge_bps` now reads `30`
+live.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-22 (Fourth pair SAMO/USDC, per-pair toggles, toggle-switch fix)
 
 ### Problem

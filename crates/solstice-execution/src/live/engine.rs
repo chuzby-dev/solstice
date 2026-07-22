@@ -1912,7 +1912,7 @@ mod tests {
             cross_dex_arb_enabled: false,
             cross_dex_min_spread: 0.015,
             cross_dex_max_slippage_bps: 30,
-            cross_dex_min_net_edge_bps: 10,
+            cross_dex_min_net_edge_bps: 30,
             disabled_pairs: std::collections::HashSet::new(),
             slippage_bps: 50,
             poll_interval: Duration::from_secs(3600),
@@ -2271,7 +2271,7 @@ mod tests {
     fn test_set_cross_dex_min_net_edge_bps_updates_status() {
         let pair = test_pair();
         let engine = test_engine(pair, 50.0);
-        assert_eq!(engine.status().cross_dex_min_net_edge_bps, 10);
+        assert_eq!(engine.status().cross_dex_min_net_edge_bps, 30);
 
         engine.set_cross_dex_min_net_edge_bps(25);
         assert_eq!(engine.status().cross_dex_min_net_edge_bps, 25);
