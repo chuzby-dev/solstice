@@ -6,6 +6,51 @@
 
 ---
 
+## [0.1.0-alpha] - 2026-07-22 (Give SMA a sell signal so it can keep trading)
+
+### Problem
+
+User asked: on a fixed $15 deposit, if SMA buys SOL and price just
+chops sideways (never gaining the 5% take-profit, never falling enough
+to stop out), doesn't the strategy just get stuck holding SOL forever
+and stop trading? Checked the code: correct.
+`SimpleMovingAverageStrategy::evaluate`
+(`crates/solstice-strategy/src/strategies/sma.rs`) only ever emitted a
+`Buy` signal (when short SMA > long SMA); the `else` branch returned no
+signal at all. `LiveTradingEngine::evaluate_stop_losses`'s own doc
+comment already flagged this: "Neither SMA nor SpreadArb ever emits its
+own exit signal, so this is the only path a profitable position closes
+through" -- meaning a position that never crosses either threshold sits
+open indefinitely, and with only one $15 slot of capital, the strategy
+goes idle once it's taken.
+
+### Fix
+
+Completed the crossover: `evaluate` now emits `SignalType::Sell` when
+short SMA is at or below long SMA, mirroring the existing buy branch
+(same confidence formula, which is already direction-agnostic via
+`.abs()` on the relative gap). No execution-side work was needed --
+`LiveTradingEngine::plan_signal`/`execute_planned_trade` already fully
+handle `SignalType::Sell` (verified by reading the code: sells the
+entire held position back to quote, frees `capital_deployed_usd`,
+removes the tracked position, records realized P&L) - that path
+already existed and is exercised by `SpreadArbitrageStrategy`, SMA
+just never used it.
+
+### Verified
+
+`cargo fmt --all`, `cargo clippy --workspace --lib --bins --tests
+--all-features -- -D warnings`, `cargo test --workspace --exclude
+solstice-api` (50 solstice-strategy tests, +2 new:
+`test_sell_signal_on_downtrend`, `test_flat_history_yields_sell_not_silence`)
+plus `cargo test -p solstice-api --lib` all pass. Confirmed no open
+positions before restarting `serve`; rebuilt, relaunched, and armed per
+the user's explicit request: `strategies_enabled=true`,
+`cross_dex_arb_enabled=false` (the reverse of the prior config),
+`max_capital_usd=$15`, `enabled=true`.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-22 (Fix: opportunity detection sized nothing like the real trade)
 
 ### Problem

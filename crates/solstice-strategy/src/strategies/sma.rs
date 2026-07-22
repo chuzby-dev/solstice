@@ -4,6 +4,15 @@
 //! sketch (which assumes the snapshot itself somehow carries history),
 //! this strategy maintains its own rolling price window internally,
 //! updated on every `evaluate` call.
+//!
+//! Emits both directions of the crossover -- buy when the short SMA is
+//! above the long SMA, sell when it's at or below -- so a position this
+//! strategy opens is also the one that closes it, rather than relying
+//! solely on `take_profit_percent`/stop-loss to ever free that capital
+//! back up. Without this, a position that never moves far enough in
+//! either direction to hit a threshold sits open indefinitely, which
+//! for a small fixed-capital deployment (e.g. a single $15 allocation)
+//! means the strategy simply stops trading once its one slot is taken.
 
 use crate::error::StrategyResult;
 use crate::strategy::Strategy;
@@ -107,18 +116,15 @@ impl Strategy for SimpleMovingAverageStrategy {
             return Ok(Vec::new());
         };
 
-        if short_sma > long_sma {
-            let confidence = Self::crossover_confidence(short_sma, long_sma);
-            let mut signal = Signal::new(
-                self.name().to_string(),
-                SignalType::Buy { pair: self.pair },
-                confidence,
-            );
-            signal.metadata = json!({ "short_sma": short_sma, "long_sma": long_sma });
-            Ok(vec![signal])
+        let confidence = Self::crossover_confidence(short_sma, long_sma);
+        let signal_type = if short_sma > long_sma {
+            SignalType::Buy { pair: self.pair }
         } else {
-            Ok(Vec::new())
-        }
+            SignalType::Sell { pair: self.pair }
+        };
+        let mut signal = Signal::new(self.name().to_string(), signal_type, confidence);
+        signal.metadata = json!({ "short_sma": short_sma, "long_sma": long_sma });
+        Ok(vec![signal])
     }
 
     fn metadata(&self) -> StrategyMetadata {
@@ -180,6 +186,56 @@ mod tests {
         assert!(matches!(
             last_signals[0].signal_type,
             SignalType::Buy { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_sell_signal_on_downtrend() {
+        let pair = TokenPair::new(Pubkey::new_unique(), Pubkey::new_unique());
+        let strategy = SimpleMovingAverageStrategy::new(pair, 2, 4);
+        let portfolio = PortfolioState::empty();
+
+        // Feed a downtrend: short-period average should pull below the
+        // long-period average once enough history accumulates.
+        let prices = [120.0, 119.0, 118.0, 110.0, 100.0];
+        let mut last_signals = Vec::new();
+        for price in prices {
+            last_signals = strategy
+                .evaluate(&snapshot_with_price(pair, price), &portfolio, &json!({}))
+                .await
+                .unwrap();
+        }
+
+        assert!(!last_signals.is_empty());
+        assert!(matches!(
+            last_signals[0].signal_type,
+            SignalType::Sell { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_flat_history_yields_sell_not_silence() {
+        // A flat price series settles short SMA == long SMA (zero gap).
+        // The old behavior emitted nothing once there was no longer an
+        // active uptrend; the strategy must now still emit a (low-
+        // confidence) sell rather than going silent, since silence is
+        // exactly what leaves an open position stuck.
+        let pair = TokenPair::new(Pubkey::new_unique(), Pubkey::new_unique());
+        let strategy = SimpleMovingAverageStrategy::new(pair, 2, 4);
+        let portfolio = PortfolioState::empty();
+
+        let mut last_signals = Vec::new();
+        for _ in 0..5 {
+            last_signals = strategy
+                .evaluate(&snapshot_with_price(pair, 100.0), &portfolio, &json!({}))
+                .await
+                .unwrap();
+        }
+
+        assert!(!last_signals.is_empty());
+        assert!(matches!(
+            last_signals[0].signal_type,
+            SignalType::Sell { .. }
         ));
     }
 
