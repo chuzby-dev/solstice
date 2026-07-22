@@ -75,6 +75,11 @@ function describeLiveEvent(event: LiveEvent): { text: string; tone: 'neutral' | 
         text: `Cross-DEX minimum net edge changed to ${(event.cross_dex_min_net_edge_bps / 100).toFixed(2)}%`,
         tone: 'neutral',
       };
+    case 'PairEnabledChanged':
+      return {
+        text: `${event.pair_label} ${event.enabled ? 'enabled' : 'disabled'} for new trades`,
+        tone: 'neutral',
+      };
     case 'CrossDexOpportunityDetected':
       return {
         text: `Spread on ${event.pair_label}: buy ${event.buy_dex} @ ${formatPrice(event.buy_price)}, sell ${event.sell_dex} @ ${formatPrice(event.sell_price)} (${event.spread_percent.toFixed(2)}%)`,
@@ -220,6 +225,18 @@ export function LiveTradingPage() {
     try {
       await api.liveSetCrossDexMinNetEdgeBps(Math.round(percent * 100));
       setCrossDexMinEdgeInput('');
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleTogglePair = async (pairLabel: string, enabled: boolean) => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api.liveTogglePair(pairLabel, enabled);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -543,6 +560,38 @@ export function LiveTradingPage() {
                 per-leg tolerance above. The trade gate is actually{' '}
                 <code>max(min spread, 2x per-leg slippage + this)</code> -- a raw quoted spread
                 clearing "min spread" alone doesn't mean it survives real execution costs.
+              </p>
+            </div>
+
+            {/* Per-pair enable/disable */}
+            <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-1)] p-4">
+              <div className="mb-3 text-sm font-medium text-[var(--text-secondary)]">
+                Pairs traded
+              </div>
+              <table className="w-full text-sm">
+                <tbody>
+                  {status.pairs.map((p) => (
+                    <tr key={p.pair_label} className="border-t border-[var(--gridline)] first:border-t-0">
+                      <td className="py-2">
+                        <label className="flex cursor-pointer items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={p.enabled}
+                            disabled={busy}
+                            onChange={(e) => handleTogglePair(p.pair_label, e.target.checked)}
+                            className="h-4 w-4 rounded border-[var(--border)] accent-[var(--status-warning)]"
+                          />
+                          <span className="text-[var(--text-primary)]">{p.pair_label}</span>
+                        </label>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="mt-2 text-xs text-[var(--text-muted)]">
+                Unchecking a pair stops it from being considered for new trades (both strategy
+                signals and cross-DEX arb) -- an existing open position on that pair still gets
+                sampled and closed normally.
               </p>
             </div>
 

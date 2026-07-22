@@ -108,6 +108,10 @@ pub enum LiveEvent {
     CrossDexMinNetEdgeChanged {
         cross_dex_min_net_edge_bps: u32,
     },
+    PairEnabledChanged {
+        pair_label: String,
+        enabled: bool,
+    },
     CrossDexOpportunityDetected {
         pair_label: String,
         buy_dex: String,
@@ -151,6 +155,12 @@ pub enum LiveEvent {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct PairStatus {
+    pub pair_label: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct LivePositionSnapshot {
     pub pair_label: String,
     pub quantity_raw: u64,
@@ -172,6 +182,7 @@ pub struct LiveStatusSnapshot {
     pub cross_dex_min_spread: f64,
     pub cross_dex_max_slippage_bps: u32,
     pub cross_dex_min_net_edge_bps: u32,
+    pub pairs: Vec<PairStatus>,
     pub capital_deployed_usd: f64,
     pub capital_available_usd: f64,
     pub realized_pnl_usd: f64,
@@ -459,6 +470,25 @@ impl LiveTradingEngine {
         });
     }
 
+    /// Enable or disable a configured pair (by `LiveTradedPair::label`) for
+    /// *new* trade consideration -- see `LiveTradingConfig::disabled_pairs`'s
+    /// doc comment for why an existing open position keeps being sampled
+    /// and closed regardless. No-op (but still emits the event) if
+    /// `pair_label` doesn't match any configured pair.
+    pub fn set_pair_enabled(&self, pair_label: String, enabled: bool) {
+        let mut config = self.config.lock().expect("config lock poisoned");
+        if enabled {
+            config.disabled_pairs.remove(&pair_label);
+        } else {
+            config.disabled_pairs.insert(pair_label.clone());
+        }
+        drop(config);
+        self.emit(LiveEvent::PairEnabledChanged {
+            pair_label,
+            enabled,
+        });
+    }
+
     fn pair_label(&self, pair: &TokenPair) -> String {
         self.pairs
             .iter()
@@ -483,6 +513,14 @@ impl LiveTradingEngine {
             cross_dex_min_spread: config.cross_dex_min_spread,
             cross_dex_max_slippage_bps: config.cross_dex_max_slippage_bps,
             cross_dex_min_net_edge_bps: config.cross_dex_min_net_edge_bps,
+            pairs: self
+                .pairs
+                .iter()
+                .map(|p| PairStatus {
+                    pair_label: p.label.to_string(),
+                    enabled: !config.disabled_pairs.contains(p.label),
+                })
+                .collect(),
             capital_deployed_usd,
             capital_available_usd: (config.max_capital_usd - capital_deployed_usd).max(0.0),
             realized_pnl_usd: *self.realized_pnl_usd.lock().expect("lock poisoned"),
@@ -568,18 +606,27 @@ impl LiveTradingEngine {
         let mut snapshot = MarketSnapshot::new(0);
 
         for pair in &self.pairs {
-            let slippage_bps = self
-                .config
-                .lock()
-                .expect("config lock poisoned")
-                .slippage_bps;
+            let token_pair = TokenPair::new(pair.base_mint, pair.quote_mint);
+
+            let slippage_bps = {
+                let config = self.config.lock().expect("config lock poisoned");
+                if config.disabled_pairs.contains(pair.label)
+                    && !self
+                        .positions
+                        .lock()
+                        .expect("positions lock poisoned")
+                        .contains_key(&token_pair)
+                {
+                    continue;
+                }
+                config.slippage_bps
+            };
             let quote_request = QuoteRequest::new(
                 pair.base_mint,
                 pair.quote_mint,
                 pair.reference_amount,
                 slippage_bps,
             );
-            let token_pair = TokenPair::new(pair.base_mint, pair.quote_mint);
 
             let mut observations = Vec::with_capacity(3);
             for (name, has_pool) in [
@@ -1210,6 +1257,16 @@ impl LiveTradingEngine {
                     "cross-dex arb: cycling capital back to quote".to_string(),
                 )
                 .await;
+                continue;
+            }
+
+            if self
+                .config
+                .lock()
+                .expect("config lock poisoned")
+                .disabled_pairs
+                .contains(pair.label)
+            {
                 continue;
             }
 
@@ -1856,6 +1913,7 @@ mod tests {
             cross_dex_min_spread: 0.015,
             cross_dex_max_slippage_bps: 30,
             cross_dex_min_net_edge_bps: 10,
+            disabled_pairs: std::collections::HashSet::new(),
             slippage_bps: 50,
             poll_interval: Duration::from_secs(3600),
             tip_lamports: None,
@@ -2217,6 +2275,25 @@ mod tests {
 
         engine.set_cross_dex_min_net_edge_bps(25);
         assert_eq!(engine.status().cross_dex_min_net_edge_bps, 25);
+    }
+
+    #[test]
+    fn test_set_pair_enabled_updates_status() {
+        let pair = test_pair();
+        let engine = test_engine(pair, 50.0);
+        assert!(engine.status().pairs.iter().all(|p| p.enabled));
+
+        engine.set_pair_enabled(pair.label.to_string(), false);
+        let status = engine.status();
+        let entry = status
+            .pairs
+            .iter()
+            .find(|p| p.pair_label == pair.label)
+            .expect("configured pair must appear in status");
+        assert!(!entry.enabled);
+
+        engine.set_pair_enabled(pair.label.to_string(), true);
+        assert!(engine.status().pairs.iter().all(|p| p.enabled));
     }
 
     #[test]

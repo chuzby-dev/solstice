@@ -57,6 +57,10 @@ const BONK_MINT: &str = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263";
 const RAYDIUM_BONK_USDC_POOL: &str = "G7mw1d83ismcQJKkzt62Ug4noXCjVhu3eV7U5EMgge6Z";
 const ORCA_BONK_USDC_WHIRLPOOL: &str = "8QaXeHBrShJTdtN1rWCccBxpSVvKksQ2PCu5nufb2zbk";
 
+const SAMO_MINT: &str = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
+const RAYDIUM_SAMO_USDC_POOL: &str = "7oYaghDwJ6ZbZwzdzcPqQtW6r4cojSLJDKB6U7tqAK1x";
+const ORCA_SAMO_USDC_WHIRLPOOL: &str = "FuvLSmZRY7X4tBciLbgVkSPLBW7v4d1i57D4sWd3ig8x";
+
 fn main() {
     // See solstice-simulation's paper_trade.rs for why this needs a
     // larger-than-default stack on Windows debug builds.
@@ -190,6 +194,18 @@ async fn async_main() {
                         orca_pool: Pubkey::from_str(ORCA_BONK_USDC_WHIRLPOOL).ok(),
                     };
 
+                    let samo = Pubkey::from_str(SAMO_MINT).expect("SAMO_MINT is a valid pubkey");
+                    let samo_usdc_pair = LiveTradedPair {
+                        label: "SAMO/USDC",
+                        base_mint: samo,
+                        base_decimals: 9,
+                        quote_mint: usdc,
+                        quote_decimals: 6,
+                        reference_amount: 2_000_000_000_000, // 2,000 SAMO (~$0.45)
+                        raydium_pool: Pubkey::from_str(RAYDIUM_SAMO_USDC_POOL).ok(),
+                        orca_pool: Pubkey::from_str(ORCA_SAMO_USDC_WHIRLPOOL).ok(),
+                    };
+
                     let live_strategies = Arc::new(StrategyManager::new(StrategyConfig::default()));
                     live_strategies
                         .register_strategy(Arc::new(SimpleMovingAverageStrategy::new(
@@ -211,7 +227,7 @@ async fn async_main() {
                         WalletFile::at(&path),
                         rpc,
                         live_strategies,
-                        vec![pair, ray_usdc_pair, bonk_usdc_pair],
+                        vec![pair, ray_usdc_pair, bonk_usdc_pair, samo_usdc_pair],
                         LiveTradingConfig::default(),
                     ) {
                         Ok(engine) => {

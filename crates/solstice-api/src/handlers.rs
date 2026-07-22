@@ -2,8 +2,8 @@
 
 use crate::dto::{
     ConvertDirection, ConvertRequest, ConvertResponse, DevnetBalanceResponse, LiveConfigRequest,
-    PerformanceResponse, PositionsResponse, StatusResponse, TradeResponse, TradesResponse,
-    WalletResponse,
+    PerformanceResponse, PositionsResponse, StatusResponse, TogglePairRequest, TradeResponse,
+    TradesResponse, WalletResponse,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
@@ -304,5 +304,14 @@ pub async fn live_set_config(
         live.set_cross_dex_arb_enabled(cross_dex_arb_enabled);
     }
 
+    Ok(Json(live.status()))
+}
+
+pub async fn live_toggle_pair(
+    State(state): State<AppState>,
+    Json(body): Json<TogglePairRequest>,
+) -> ApiResult<Json<LiveStatusSnapshot>> {
+    let live = require_live(&state)?;
+    live.set_pair_enabled(body.pair_label, body.enabled);
     Ok(Json(live.status()))
 }

@@ -6,6 +6,63 @@
 
 ---
 
+## [0.1.0-alpha] - 2026-07-22 (Fourth pair SAMO/USDC, per-pair toggles, toggle-switch fix)
+
+### Problem
+
+Three parts:
+1. With the new cost-aware gate (previous entry), SOL/RAY/BONK spreads
+   stayed below the ~0.7% threshold almost continuously -- user asked
+   for a genuinely wider pair. A fresh survey (SAMO, POPCAT, WEN, MYRO)
+   found SAMO/USDC at ~0.73% (Raydium $0.0002241 vs Orca $0.0002258),
+   clearing the gate, though on thin pools (~$1.2K/$4.2K TVL) -- user
+   confirmed thin liquidity isn't a concern at $15-50 trade sizes.
+2. User wanted to selectively disable individual pairs rather than all
+   four always trading.
+3. User reported `ToggleSwitch`'s thumb rendering outside the track,
+   floating in the background. Root cause: Tailwind v4's `translate-x-*`
+   utilities compile to the standalone CSS `translate` property; this
+   preview environment left `transform: none` despite `translate: 22px`
+   being set, so the slide never visually applied.
+
+### Fix
+
+Added SAMO/USDC as a fourth pair (`crates/solstice-api/src/bin/serve.rs`,
+Raydium pool `7oYaghDwJ6ZbZwzdzcPqQtW6r4cojSLJDKB6U7tqAK1x`, Orca whirlpool
+`FuvLSmZRY7X4tBciLbgVkSPLBW7v4d1i57D4sWd3ig8x`). Added
+`LiveTradingConfig::disabled_pairs: HashSet<String>` (default empty --
+nothing disabled) plus `LiveTradingEngine::set_pair_enabled`,
+`LiveEvent::PairEnabledChanged`, and a `PairStatus` list on
+`LiveStatusSnapshot`; both `sample_market` and
+`evaluate_cross_dex_arbitrage` skip a disabled pair for *new* trade
+consideration but keep sampling/closing it if it already has an open
+position, so toggling a pair off never strands live inventory. New
+`POST /api/v1/live/pairs/toggle` route/handler/DTO. Dashboard: a
+checkbox table under "Pairs traded" on the Live Trading page, wired to
+the new endpoint. Fixed `ToggleSwitch.tsx` by replacing the
+`translate-x-*` utility with a plain `style={{ left }}` position, which
+sidesteps the `translate`/`transform` interaction entirely.
+
+### Verified
+
+`cargo fmt --all`, `cargo clippy --workspace --lib --bins --tests
+--all-features -- -D warnings`, `cargo test --workspace --exclude
+solstice-api` (102 execution tests including
+`test_set_pair_enabled_updates_status`) plus `cargo test -p solstice-api
+--lib` all pass. `npx tsc --noEmit` passes clean. Confirmed no open
+positions before restarting `serve`; rebuilt and relaunched. Verified
+live in the browser: toggle-switch thumb now sits fully inside its
+track (`thumbRight <= trackRight`, confirmed via bounding-rect check);
+all four pairs (including SAMO/USDC) appear checked in the new table
+and stream live prices; Live Trading page renders without error after
+removing a temporary diagnostic error boundary used to chase down an
+unrelated transient Fast-Refresh crash (not a real bug -- resolved on a
+clean reload). Armed per user request: `max_capital_usd=$15`,
+`strategies_enabled=false`, `cross_dex_arb_enabled=true`,
+`enabled=true` (live trading on).
+
+---
+
 ## [0.1.0-alpha] - 2026-07-22 (Cost-aware cross-DEX arb gate)
 
 ### Problem

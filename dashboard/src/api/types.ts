@@ -124,6 +124,11 @@ export interface LivePositionSnapshot {
   unrealized_pnl_usd: number;
 }
 
+export interface PairStatus {
+  pair_label: string;
+  enabled: boolean;
+}
+
 export interface LiveStatusResponse {
   enabled: boolean;
   wallet_address: string;
@@ -135,6 +140,7 @@ export interface LiveStatusResponse {
   cross_dex_min_spread: number;
   cross_dex_max_slippage_bps: number;
   cross_dex_min_net_edge_bps: number;
+  pairs: PairStatus[];
   capital_deployed_usd: number;
   capital_available_usd: number;
   realized_pnl_usd: number;
@@ -173,6 +179,7 @@ export type LiveEvent =
   | { type: 'CrossDexMinSpreadChanged'; cross_dex_min_spread: number }
   | { type: 'CrossDexMaxSlippageChanged'; cross_dex_max_slippage_bps: number }
   | { type: 'CrossDexMinNetEdgeChanged'; cross_dex_min_net_edge_bps: number }
+  | { type: 'PairEnabledChanged'; pair_label: string; enabled: boolean }
   | {
       type: 'CrossDexOpportunityDetected';
       pair_label: string;

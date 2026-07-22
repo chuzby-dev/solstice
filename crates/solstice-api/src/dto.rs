@@ -44,6 +44,16 @@ pub struct LiveConfigRequest {
     pub cross_dex_min_net_edge_bps: Option<u32>,
 }
 
+/// Request body for `POST /api/v1/live/pairs/toggle`. Enables or disables
+/// one configured pair (by `LiveTradedPair::label`, e.g. `"SOL/USDC"`) for
+/// new trade consideration -- see `LiveTradingConfig::disabled_pairs`'s
+/// doc comment.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TogglePairRequest {
+    pub pair_label: String,
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusResponse {
     pub status: &'static str,

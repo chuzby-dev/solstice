@@ -74,6 +74,8 @@ export const api = {
     postJson<LiveStatusResponse>('/live/config', { cross_dex_max_slippage_bps }),
   liveSetCrossDexMinNetEdgeBps: (cross_dex_min_net_edge_bps: number) =>
     postJson<LiveStatusResponse>('/live/config', { cross_dex_min_net_edge_bps }),
+  liveTogglePair: (pair_label: string, enabled: boolean) =>
+    postJson<LiveStatusResponse>('/live/pairs/toggle', { pair_label, enabled }),
 };
 
 export function wsUrl(): string {

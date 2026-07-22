@@ -40,6 +40,10 @@ impl ApiServer {
             .route("/api/v1/live/enable", post(handlers::live_enable))
             .route("/api/v1/live/disable", post(handlers::live_disable))
             .route("/api/v1/live/config", post(handlers::live_set_config))
+            .route(
+                "/api/v1/live/pairs/toggle",
+                post(handlers::live_toggle_pair),
+            )
             .route("/api/v1/live/ws", get(websocket::live_ws_handler))
             .layer(CorsLayer::permissive())
             .layer(TraceLayer::new_for_http())

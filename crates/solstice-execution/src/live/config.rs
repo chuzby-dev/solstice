@@ -2,6 +2,7 @@
 
 use crate::risk::RiskLimits;
 use solana_sdk::pubkey::Pubkey;
+use std::collections::HashSet;
 use std::time::Duration;
 
 /// A pair the live engine trades: the base token strategies signal on,
@@ -120,6 +121,17 @@ pub struct LiveTradingConfig {
     /// silently eating into the margin. Adjustable at runtime via
     /// `LiveTradingEngine::set_cross_dex_min_net_edge_bps`.
     pub cross_dex_min_net_edge_bps: u32,
+    /// Labels (`LiveTradedPair::label`) excluded from *new* trade
+    /// consideration -- both the cross-DEX arb's opportunity search and
+    /// ordinary strategy market sampling skip a disabled pair, unless it
+    /// already has an open position, in which case sampling/closing keep
+    /// running for it regardless (stop-loss/take-profit and the arb's
+    /// flatten-back-to-quote retry must never lose track of live
+    /// inventory just because a pair was toggled off after the fact).
+    /// Empty by default -- every configured pair trades unless explicitly
+    /// disabled. Adjustable at runtime via
+    /// `LiveTradingEngine::set_pair_enabled`.
+    pub disabled_pairs: HashSet<String>,
     /// Slippage tolerance passed to Jupiter for both price sampling and
     /// execution quotes. `execute_planned_trade` re-fetches a quote right
     /// before submitting, but `JupiterClient::build_swap_instructions`
@@ -178,6 +190,7 @@ impl Default for LiveTradingConfig {
             cross_dex_min_spread: 0.005,
             cross_dex_max_slippage_bps: 30,
             cross_dex_min_net_edge_bps: 10,
+            disabled_pairs: HashSet::new(),
             slippage_bps: 150,
             poll_interval: Duration::from_secs(15),
             tip_lamports: None,
