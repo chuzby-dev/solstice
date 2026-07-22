@@ -6,6 +6,57 @@
 
 ---
 
+## [0.1.0-alpha] - 2026-07-22 (Fix: opportunity detection sized nothing like the real trade)
+
+### Problem
+
+User reported the bot still losing money on every trade even after
+atomicity shipped -- "hasn't done a single profitable trade yet."
+Pulled the on-chain data for a real BONK/USDC atomic transaction
+(`3snbmsrwhxYNjqEqZ6n9eD5ycvYw1ec4hQZ974zvTWYEY5KgU3HMfzx3GW7GuRBwwVjmHEKr9JJ1hvrYsjnRuJwf`):
+both legs landed with no error and BONK correctly round-tripped to
+zero, but USDC dropped by $0.0397 plus $0.0105 in fees. Not an
+atomicity problem -- the trade itself was priced wrong before it ever
+built a transaction.
+
+Root cause: `find_arb_opportunity` detects a spread by quoting
+`pair.reference_amount` -- a small fixed probe (~$0.30 notional for
+BONK, ~$0.77 for SOL). `execute_cross_dex_arb` then trades whatever
+`size_usd` the wallet/config allows, typically the full $15 cap --
+**50x** the reference amount. AMM price impact grows with trade size on
+both legs of an arb, so a spread that clears the required threshold at
+$0.30 is not the same spread that exists at $15; the opportunity check
+and the actual trade were never sized consistently with each other.
+
+### Fix
+
+`crates/solstice-execution/src/live/engine.rs`:
+`evaluate_cross_dex_arbitrage` now passes `required_spread` into
+`execute_cross_dex_arb`, which already fetches fresh buy/sell quotes
+at the real `size_usd` before building any transaction. Added a
+re-check right after those quotes come back: compute the spread they'd
+actually realize at real size, and abort (emitting
+`CrossDexArbFailed` with `leg: "sizing"`) if it no longer clears
+`required_spread` -- before ever calling `build_atomic_swap_transaction`
+or spending a fee. Aborting here costs nothing beyond the quote
+requests already made.
+
+### Verified
+
+`cargo fmt --all`, `cargo clippy --workspace --lib --bins --tests
+--all-features -- -D warnings`, `cargo test --workspace --exclude
+solstice-api` (106 execution tests) plus `cargo test -p solstice-api
+--lib` all pass. No dedicated unit test added for the new gate itself
+-- exercising it needs a mocked `DexAggregator` returning size-dependent
+quotes, which this engine's test harness doesn't currently support (the
+existing tests hit a real, unreachable RPC endpoint by design). Confirmed
+no open positions before restarting `serve`; rebuilt, relaunched, and
+re-armed with the user's config (`max_capital_usd=$15`,
+`strategies_enabled=false`, `cross_dex_arb_enabled=true`,
+`enabled=true`).
+
+---
+
 ## [0.1.0-alpha] - 2026-07-22 (Fix: atomic arb transaction over the 1232-byte limit)
 
 ### Problem

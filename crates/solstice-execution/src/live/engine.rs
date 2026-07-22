@@ -1289,7 +1289,8 @@ impl LiveTradingEngine {
                 sell_price: opportunity.sell_price,
                 spread_percent: opportunity.spread * 100.0,
             });
-            self.execute_cross_dex_arb(&pair, opportunity).await;
+            self.execute_cross_dex_arb(&pair, opportunity, required_spread)
+                .await;
         }
     }
 
@@ -1391,7 +1392,23 @@ impl LiveTradingEngine {
     /// tracked position" case: a failed atomic transaction touches
     /// nothing, so this never strands capital the way the old design
     /// could.
-    async fn execute_cross_dex_arb(&self, pair: &LiveTradedPair, opportunity: ArbOpportunity) {
+    ///
+    /// `opportunity` was detected from quotes sized at
+    /// `pair.reference_amount` (a small probe, e.g. ~$0.30 for BONK) --
+    /// not the real trade size. AMM price impact grows with size on both
+    /// legs, so a spread that clears `required_spread` at the reference
+    /// amount is not guaranteed to survive at the actual `size_usd` this
+    /// computes below; a live BONK/USDC atomic trade confirmed this
+    /// directly (both legs landed, net -$0.04 on the spread alone). Once
+    /// real-size quotes are in hand, this re-checks the spread against
+    /// `required_spread` before ever building a transaction -- aborting
+    /// here costs nothing beyond the quote requests already made.
+    async fn execute_cross_dex_arb(
+        &self,
+        pair: &LiveTradedPair,
+        opportunity: ArbOpportunity,
+        required_spread: f64,
+    ) {
         let pair_label = pair.label.to_string();
 
         if !self.is_enabled() {
@@ -1562,6 +1579,27 @@ impl LiveTradingEngine {
             }
         };
 
+        // Re-check the spread at the real trade size, using the fresh
+        // quotes just fetched -- `opportunity` only proved a spread
+        // existed at `pair.reference_amount`, a much smaller probe.
+        // Aborting here is cheap: no transaction has been built yet, so
+        // this costs nothing beyond the quote requests already made.
+        let exit_value_usd = sell_quote.out_amount as f64 / 10f64.powi(pair.quote_decimals as i32);
+        let realized_spread = exit_value_usd / size_usd as f64 - 1.0;
+        if realized_spread < required_spread {
+            self.emit(LiveEvent::CrossDexArbFailed {
+                pair_label,
+                leg: "sizing".to_string(),
+                reason: format!(
+                    "spread collapsed at real trade size: {:.3}% at ${size_usd} vs {:.3}% required \
+                     (opportunity was detected from a much smaller reference-amount quote)",
+                    realized_spread * 100.0,
+                    required_spread * 100.0
+                ),
+            });
+            return;
+        }
+
         let legs: [(&dyn DexClient, &SwapRequest, &Quote); 2] = [
             (buy_client.as_ref(), &buy_swap, &buy_quote),
             (sell_client.as_ref(), &sell_swap, &sell_quote),
@@ -1582,8 +1620,6 @@ impl LiveTradingEngine {
             Ok(outcome) => {
                 let buy_price = quote_price(pair, &buy_quote);
                 let realized_sell_price = sell_price(pair, &sell_quote);
-                let exit_value_usd =
-                    sell_quote.out_amount as f64 / 10f64.powi(pair.quote_decimals as i32);
                 let realized_pnl = exit_value_usd - size_usd as f64;
 
                 *self.realized_pnl_usd.lock().expect("lock poisoned") += realized_pnl;
