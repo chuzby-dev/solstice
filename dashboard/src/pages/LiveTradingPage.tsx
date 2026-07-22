@@ -2,14 +2,14 @@ import { useState } from 'react';
 import { api } from '../api/client';
 import { usePolling } from '../api/usePolling';
 import { useLiveEvents } from '../api/useLiveEvents';
-import { StatTile, formatUsd } from '../components/StatTile';
+import { StatTile, formatPrice, formatUsd } from '../components/StatTile';
 import { ToggleSwitch } from '../components/ToggleSwitch';
 import type { LiveEvent } from '../api/types';
 
 function describeLiveEvent(event: LiveEvent): { text: string; tone: 'neutral' | 'good' | 'warning' | 'critical' } {
   switch (event.type) {
     case 'PriceUpdate':
-      return { text: `${event.pair_label}: $${event.price.toFixed(4)}`, tone: 'neutral' };
+      return { text: `${event.pair_label}: ${formatPrice(event.price)}`, tone: 'neutral' };
     case 'SignalGenerated':
       return {
         text: `${event.strategy} signaled on ${event.pair_label} (${(event.confidence * 100).toFixed(0)}%)`,
@@ -24,7 +24,7 @@ function describeLiveEvent(event: LiveEvent): { text: string; tone: 'neutral' | 
       return { text: `${event.strategy} skipped on ${event.pair_label}: ${event.reason}`, tone: 'neutral' };
     case 'OrderFilled':
       return {
-        text: `FILLED: ${event.strategy} — ${formatUsd(event.size_usd)} of ${event.pair_label} @ $${event.price.toFixed(4)} (${event.method})`,
+        text: `FILLED: ${event.strategy} — ${formatUsd(event.size_usd)} of ${event.pair_label} @ ${formatPrice(event.price)} (${event.method})`,
         tone: 'good',
       };
     case 'OrderFailed':
@@ -72,12 +72,12 @@ function describeLiveEvent(event: LiveEvent): { text: string; tone: 'neutral' | 
       };
     case 'CrossDexOpportunityDetected':
       return {
-        text: `Spread on ${event.pair_label}: buy ${event.buy_dex} @ $${event.buy_price.toFixed(4)}, sell ${event.sell_dex} @ $${event.sell_price.toFixed(4)} (${event.spread_percent.toFixed(2)}%)`,
+        text: `Spread on ${event.pair_label}: buy ${event.buy_dex} @ ${formatPrice(event.buy_price)}, sell ${event.sell_dex} @ ${formatPrice(event.sell_price)} (${event.spread_percent.toFixed(2)}%)`,
         tone: 'neutral',
       };
     case 'CrossDexArbFilled':
       return {
-        text: `ARB FILLED: ${event.pair_label} — bought ${formatUsd(event.size_usd)} on ${event.buy_dex} @ $${event.buy_price.toFixed(4)}, sold on ${event.sell_dex} @ $${event.sell_price.toFixed(4)} (${formatUsd(event.realized_pnl_usd)} realized)`,
+        text: `ARB FILLED: ${event.pair_label} — bought ${formatUsd(event.size_usd)} on ${event.buy_dex} @ ${formatPrice(event.buy_price)}, sold on ${event.sell_dex} @ ${formatPrice(event.sell_price)} (${formatUsd(event.realized_pnl_usd)} realized)`,
         tone: event.realized_pnl_usd >= 0 ? 'good' : 'critical',
       };
     case 'CrossDexArbFailed':
@@ -524,8 +524,8 @@ export function LiveTradingPage() {
                   {status.positions.map((p) => (
                     <tr key={p.pair_label} className="border-t border-[var(--gridline)]">
                       <td className="px-4 py-2">{p.pair_label}</td>
-                      <td className="px-4 py-2">${p.entry_price.toFixed(4)}</td>
-                      <td className="px-4 py-2">${p.current_price.toFixed(4)}</td>
+                      <td className="px-4 py-2">{formatPrice(p.entry_price)}</td>
+                      <td className="px-4 py-2">{formatPrice(p.current_price)}</td>
                       <td className="px-4 py-2">{formatUsd(p.allocated_usd)}</td>
                       <td
                         className={

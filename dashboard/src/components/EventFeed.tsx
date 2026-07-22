@@ -1,11 +1,11 @@
 import type { EngineEvent } from '../api/types';
-import { formatUsd } from './StatTile';
+import { formatPrice, formatUsd } from './StatTile';
 
 function describe(event: EngineEvent): { text: string; tone: 'neutral' | 'good' | 'accent' } {
   switch (event.type) {
     case 'PriceUpdate':
       return {
-        text: `${event.pair_label} on ${event.dex}: $${event.price.toFixed(4)}`,
+        text: `${event.pair_label} on ${event.dex}: ${formatPrice(event.price)}`,
         tone: 'neutral',
       };
     case 'SignalGenerated':
@@ -15,7 +15,7 @@ function describe(event: EngineEvent): { text: string; tone: 'neutral' | 'good' 
       };
     case 'OrderFilled':
       return {
-        text: `${event.strategy} filled ${formatUsd(event.size_usd)} of ${event.pair_label} @ $${event.price.toFixed(4)}`,
+        text: `${event.strategy} filled ${formatUsd(event.size_usd)} of ${event.pair_label} @ ${formatPrice(event.price)}`,
         tone: 'good',
       };
     case 'TickCompleted':

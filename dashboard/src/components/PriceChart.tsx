@@ -10,6 +10,7 @@ import {
   YAxis,
 } from 'recharts';
 import type { EngineEvent } from '../api/types';
+import { formatPrice } from './StatTile';
 
 interface PricePoint {
   time: string;
@@ -78,7 +79,7 @@ export function PriceChart({ events, pairLabel }: { events: EngineEvent[]; pairL
             tick={{ fill: 'var(--text-muted)', fontSize: 11 }}
             domain={['auto', 'auto']}
             width={70}
-            tickFormatter={(value: number) => `$${value.toFixed(2)}`}
+            tickFormatter={(value: number) => formatPrice(value)}
           />
           <Tooltip
             contentStyle={{
@@ -88,7 +89,7 @@ export function PriceChart({ events, pairLabel }: { events: EngineEvent[]; pairL
               fontSize: 12,
             }}
             labelStyle={{ color: 'var(--text-secondary)' }}
-            formatter={(value) => `$${Number(value).toFixed(4)}`}
+            formatter={(value) => formatPrice(Number(value))}
           />
           <Legend wrapperStyle={{ fontSize: 12 }} />
           <Line

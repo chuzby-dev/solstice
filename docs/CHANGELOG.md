@@ -6,6 +6,37 @@
 
 ---
 
+## [0.1.0-alpha] - 2026-07-22 (Fix: BONK prices displaying as $0.0000)
+
+### Problem
+
+User reported BONK/USDC showing "$0.0000" in the live activity feed.
+Every price display in the dashboard used a fixed `toFixed(4)` -- fine
+for SOL (~$78) or RAY (~$0.70), but BONK trades around $0.000003, so
+4 decimal places rounds it to zero. Not a data bug -- `PriceUpdate`
+events were carrying the real value the whole time, just formatted away.
+
+### Fix
+
+Added `formatPrice` to `dashboard/src/components/StatTile.tsx`:
+prices at $1+ keep the familiar 4-decimal display; below $1, the decimal
+count grows with how small the value is (via `Math.log10`), so roughly
+4 significant figures stay visible at any price scale -- $0.000003006
+instead of $0.0000. Replaced every raw `price.toFixed(4)` across
+`EventFeed.tsx`, `PriceChart.tsx` (axis ticks and tooltip), and
+`LiveTradingPage.tsx` (activity feed lines, positions table) with it.
+
+### Verified
+
+`npx tsc --noEmit` passes clean. Verified live in the browser against
+the running API: with cross-DEX arb armed and BONK/USDC actively being
+quoted, the activity feed now reads `BONK/USDC (Orca): $0.000003006`
+instead of `$0.0000`, with SOL/USDC and RAY/USDC entries unchanged in
+their existing (correct) formatting. Dashboard-only change -- no backend
+rebuild or server restart needed, Vite serves the fix live.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-22 (Third pair: BONK/USDC, widest of nine pairs surveyed)
 
 ### Problem

@@ -31,6 +31,19 @@ export function formatUsd(value: number): string {
   });
 }
 
+/// Formats a token price with enough decimals to stay meaningful for
+/// sub-cent tokens (e.g. BONK at ~$0.000003) -- a fixed toFixed(4) would
+/// show "$0.0000" for those. Prices at $1+ keep the familiar 4-decimal
+/// display; below $1, the decimal count grows with how small the value
+/// is, so roughly 4 significant figures are always visible.
+export function formatPrice(value: number): string {
+  if (!Number.isFinite(value) || value === 0) return '$0';
+  const abs = Math.abs(value);
+  if (abs >= 1) return `$${value.toFixed(4)}`;
+  const decimals = Math.min(10, Math.max(4, 3 - Math.floor(Math.log10(abs))));
+  return `$${value.toFixed(decimals)}`;
+}
+
 export function pnlTone(value: number): StatTileProps['tone'] {
   if (value > 0) return 'good';
   if (value < 0) return 'critical';
