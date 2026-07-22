@@ -69,20 +69,20 @@ pub struct LiveTradingConfig {
     pub take_profit_percent: f64,
     /// Whether the dedicated cross-DEX arbitrage executor runs at all --
     /// buy on whichever registered DEX (Jupiter/Raydium/Orca) quotes
-    /// cheapest for a pair, then immediately sell on whichever quotes
-    /// priciest. Off by default: unlike every other trade this engine
-    /// makes, this issues **two separate live transactions** back to
-    /// back with real execution-price risk between them -- nothing in
-    /// this workspace builds a single same-transaction atomic two-leg
-    /// swap (that would require an on-chain program that reads the first
-    /// leg's actual output rather than a pre-computed amount, which
-    /// doesn't exist here). If the second leg fails after the first
-    /// lands, the resulting inventory is tracked as a normal open
-    /// position (protected by `stop_loss_percent`/`take_profit_percent`
-    /// going forward) rather than lost track of -- but the arbitrage
-    /// itself is not risk-free the way the name might suggest. Requires
-    /// an explicit opt-in on top of `LiveTradingEngine::enable()`.
-    /// Adjustable at runtime via
+    /// cheapest for a pair, then sell on whichever quotes priciest. Off by
+    /// default. Both legs execute in **one atomic transaction** (see
+    /// `solstice_execution::build_atomic_swap_transaction`) -- either both
+    /// land or neither does, so there is no window between legs for the
+    /// market to move against the position and no case where a failed
+    /// second leg leaves inventory stranded. This replaced an earlier
+    /// two-separate-transaction design after a live cycle demonstrated the
+    /// real cost of that gap: a buy and sell 22 seconds apart lost 1.1% to
+    /// price movement in between, on top of normal fees. Atomicity
+    /// eliminates that specific risk; it does not guarantee profit --
+    /// slippage tolerance and fees still apply, and a quote can still be
+    /// stale by the few hundred milliseconds it takes to build and submit
+    /// the transaction. Requires an explicit opt-in on top of
+    /// `LiveTradingEngine::enable()`. Adjustable at runtime via
     /// `LiveTradingEngine::set_cross_dex_arb_enabled`.
     pub cross_dex_arb_enabled: bool,
     /// Minimum spread (e.g. `0.005` = 0.5%) between the cheapest and

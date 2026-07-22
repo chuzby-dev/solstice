@@ -131,6 +131,148 @@ pub async fn build_swap_transaction(
     Ok(transaction)
 }
 
+/// Fetch instructions for every `(dex, swap, quote)` leg and concatenate
+/// them into a single signed transaction, so all legs land together or
+/// the whole thing reverts -- e.g. buy on DEX A then sell on DEX B for a
+/// cross-DEX arbitrage, with no window between legs for the market to
+/// move against the position the way two separate transactions has.
+///
+/// Legs are appended in order (`legs[0]`'s instructions first). This
+/// relies on two properties that hold for every `DexClient` in this
+/// workspace: (1) each ATA-creation instruction is idempotent
+/// (`create_associated_token_account_idempotent`), so composing legs
+/// that touch the same token account is safe, and (2) at most one leg
+/// can be Jupiter (the only client that emits `ComputeBudget`
+/// instructions) since `find_arb_opportunity` never pairs a DEX with
+/// itself -- so there's no risk of duplicate compute-budget instructions
+/// colliding. If a leg's baked-in input amount turns out to exceed what
+/// an earlier leg actually produced (e.g. the buy underperformed its
+/// quote), Solana's preflight simulation -- on by default for
+/// `SolanaRpcClient::send_transaction` -- rejects the whole transaction
+/// before anything lands or any fee beyond the attempt is paid.
+pub async fn build_atomic_swap_transaction(
+    legs: &[(&dyn DexClient, &SwapRequest, &Quote)],
+    rpc: &SolanaRpcClient,
+    recent_blockhash: Hash,
+    payer: &Keypair,
+) -> ExecutionResult<VersionedTransaction> {
+    let Some((_, first_swap, _)) = legs.first() else {
+        return Err(ExecutionError::TransactionBuildFailed(
+            "no legs to build an atomic transaction from".to_string(),
+        ));
+    };
+    let payer_pubkey = first_swap.payer;
+
+    let mut instructions = Vec::new();
+    let mut lookup_tables: Vec<Pubkey> = Vec::new();
+    for (dex, swap, quote) in legs {
+        let swap_instructions = dex.build_swap_instructions(swap, quote).await?;
+        if swap_instructions.instructions.is_empty() {
+            return Err(ExecutionError::TransactionBuildFailed(
+                "DEX returned no swap instructions for one leg of an atomic transaction"
+                    .to_string(),
+            ));
+        }
+        instructions.extend(swap_instructions.instructions);
+        for table in swap_instructions.address_lookup_tables {
+            if !lookup_tables.contains(&table) {
+                lookup_tables.push(table);
+            }
+        }
+    }
+
+    let lookup_table_accounts = if lookup_tables.is_empty() {
+        Vec::new()
+    } else {
+        let mut accounts = Vec::with_capacity(lookup_tables.len());
+        for table in &lookup_tables {
+            accounts.push(fetch_lookup_table_account(rpc, *table).await?);
+        }
+        accounts
+    };
+
+    let message = v0::Message::try_compile(
+        &payer_pubkey,
+        &instructions,
+        &lookup_table_accounts,
+        recent_blockhash,
+    )
+    .map_err(|e| {
+        ExecutionError::TransactionBuildFailed(format!("failed to compile v0 message: {e}"))
+    })?;
+
+    let transaction = VersionedTransaction::try_new(VersionedMessage::V0(message), &[payer])
+        .map_err(|e| ExecutionError::TransactionBuildFailed(e.to_string()))?;
+
+    let size = bincode::serialize(&transaction)
+        .map_err(|e| {
+            ExecutionError::TransactionBuildFailed(format!("failed to serialize transaction: {e}"))
+        })?
+        .len();
+    if size > MAX_TRANSACTION_SIZE {
+        return Err(ExecutionError::TransactionBuildFailed(format!(
+            "assembled atomic arb transaction is {size} bytes, exceeds the {MAX_TRANSACTION_SIZE}-byte \
+             network limit even with {} address lookup table(s) applied",
+            lookup_table_accounts.len()
+        )));
+    }
+
+    Ok(transaction)
+}
+
+/// Atomic equivalent of [`execute_swap`]: build every leg into one
+/// transaction (see [`build_atomic_swap_transaction`]), then submit it
+/// exactly once (Jito bundle first, falling back to direct RPC), and
+/// confirm it landed. Either every leg executes or none do.
+#[allow(clippy::too_many_arguments)]
+pub async fn execute_atomic_arb(
+    jito: &JitoClient,
+    rpc: &SolanaRpcClient,
+    legs: &[(&dyn DexClient, &SwapRequest, &Quote)],
+    payer: &Keypair,
+    tip: Option<(Pubkey, u64)>,
+    confirm_timeout: Duration,
+    poll_interval: Duration,
+) -> ExecutionResult<SubmissionOutcome> {
+    let Some((_, first_swap, _)) = legs.first() else {
+        return Err(ExecutionError::TransactionBuildFailed(
+            "no legs to execute an atomic arb transaction from".to_string(),
+        ));
+    };
+    let payer_pubkey = first_swap.payer;
+
+    let blockhash = rpc
+        .get_latest_blockhash()
+        .await
+        .map_err(|e| ExecutionError::TransactionBuildFailed(e.to_string()))?;
+
+    let transaction = build_atomic_swap_transaction(legs, rpc, blockhash, payer).await?;
+
+    let tip_transaction = match tip {
+        Some((tip_account, lamports)) => {
+            let instruction = build_tip_instruction(&payer_pubkey, &tip_account, lamports);
+            let tx = TransactionBuilder::new()
+                .payer(payer_pubkey)
+                .add_instruction(instruction)
+                .build_and_sign(blockhash.to_bytes(), &[payer as &dyn Signer])
+                .map_err(|e| ExecutionError::TransactionBuildFailed(e.to_string()))?;
+            Some(VersionedTransaction::from(tx))
+        }
+        None => None,
+    };
+
+    submit_with_fallback(
+        jito,
+        rpc,
+        &[transaction],
+        tip_transaction,
+        confirm_timeout,
+        poll_interval,
+    )
+    .await
+    .map_err(|e| ExecutionError::TransactionBuildFailed(e.to_string()))
+}
+
 /// End-to-end swap execution: build, sign, and submit a real transaction
 /// (Jito bundle first, falling back to direct RPC — see
 /// `crate::jito::submit_with_fallback`), then confirm it landed.
@@ -359,6 +501,73 @@ mod tests {
             &payer,
         )
         .await;
+
+        assert!(matches!(
+            result,
+            Err(ExecutionError::TransactionBuildFailed(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_build_atomic_swap_transaction_merges_both_legs() {
+        let payer = Keypair::new();
+        let buy_dex = MockDex {
+            instructions: vec![small_instruction(payer.pubkey())],
+        };
+        let sell_dex = MockDex {
+            instructions: vec![small_instruction(payer.pubkey())],
+        };
+        let rpc = test_rpc();
+        let buy_swap = sample_swap(payer.pubkey());
+        let sell_swap = sample_swap(payer.pubkey());
+        let quote = sample_quote();
+
+        let legs: [(&dyn DexClient, &SwapRequest, &Quote); 2] = [
+            (&buy_dex, &buy_swap, &quote),
+            (&sell_dex, &sell_swap, &quote),
+        ];
+
+        let transaction = build_atomic_swap_transaction(&legs, &rpc, Hash::default(), &payer)
+            .await
+            .unwrap();
+
+        assert!(!transaction.signatures.is_empty());
+        assert_eq!(transaction.message.static_account_keys()[0], payer.pubkey());
+        // Both legs' instructions must be present in one transaction --
+        // the whole point of atomicity.
+        assert_eq!(transaction.message.instructions().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_build_atomic_swap_transaction_rejects_empty_legs() {
+        let payer = Keypair::new();
+        let rpc = test_rpc();
+
+        let result = build_atomic_swap_transaction(&[], &rpc, Hash::default(), &payer).await;
+
+        assert!(matches!(
+            result,
+            Err(ExecutionError::TransactionBuildFailed(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_build_atomic_swap_transaction_rejects_leg_with_no_instructions() {
+        let payer = Keypair::new();
+        let buy_dex = MockDex {
+            instructions: vec![small_instruction(payer.pubkey())],
+        };
+        let sell_dex = MockDex {
+            instructions: vec![],
+        };
+        let rpc = test_rpc();
+        let swap = sample_swap(payer.pubkey());
+        let quote = sample_quote();
+
+        let legs: [(&dyn DexClient, &SwapRequest, &Quote); 2] =
+            [(&buy_dex, &swap, &quote), (&sell_dex, &swap, &quote)];
+
+        let result = build_atomic_swap_transaction(&legs, &rpc, Hash::default(), &payer).await;
 
         assert!(matches!(
             result,

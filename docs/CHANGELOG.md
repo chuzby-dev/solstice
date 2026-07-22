@@ -6,6 +6,70 @@
 
 ---
 
+## [0.1.0-alpha] - 2026-07-22 (Make cross-DEX arb atomic: one transaction, not two)
+
+### Problem
+
+Live evidence (previous entry's real fee-drain diagnosis found this too,
+but the deeper issue is separate): a RAY/USDC cycle bought on Orca then
+sold on Jupiter 22 seconds later, losing 1.1% to price movement in that
+gap alone -- on top of fees. The two-transaction design
+(`execute_cross_dex_arb` building and submitting the buy, waiting for
+confirmation, reading a balance delta, then building and submitting the
+sell) had a real execution-price risk window between legs that no
+amount of fee/slippage margin can fix, because it isn't a fee -- it's
+the market moving in the seconds the second leg takes to land.
+
+### Fix
+
+Added `build_atomic_swap_transaction`/`execute_atomic_arb`
+(`crates/solstice-execution/src/swap.rs`): concatenate every leg's
+`DexClient::build_swap_instructions` output into one `v0::Message`,
+sign once, submit once. Both legs land together or the whole
+transaction reverts -- no gap. Two properties of every `DexClient` in
+this workspace make composing legs safe: (1) ATA-creation instructions
+are idempotent, so touching the same token account from both legs is
+fine, and (2) `find_arb_opportunity` never pairs a DEX with itself, so
+at most one leg is ever Jupiter (the only client emitting
+`ComputeBudget` instructions) -- no duplicate-instruction collisions.
+The sell leg's instructions are built to spend exactly
+`buy_quote.out_amount` (the buy's *expected* output); if the real buy
+underperforms that, Solana's preflight simulation (on by default for
+`SolanaRpcClient::send_transaction`) rejects the whole transaction
+before anything lands, costing nothing beyond the attempt.
+
+Rewrote `LiveTradingEngine::execute_cross_dex_arb` around this: fetch
+both quotes, build both `SwapRequest`s, call `execute_atomic_arb` once.
+Removed the balance-delta-retry loop, the "sell failed, track the buy
+as a position" fallback, and the RPC-lag retry -- all existed to cope
+with the two-transaction gap, which no longer exists. `LiveEvent::
+CrossDexArbFilled` now carries a single `signature` field instead of
+`buy_signature`/`sell_signature`, since there's only one transaction.
+`evaluate_cross_dex_arbitrage`'s existing-position retry-close loop
+stays as a defensive net for anything that predates atomic execution
+or arrives from outside it (manual trades, dust) -- in steady state it
+should now be a no-op, since a normal arb cycle never leaves a position
+behind.
+
+### Verified
+
+`cargo fmt --all`, `cargo clippy --workspace --lib --bins --tests
+--all-features -- -D warnings`, `cargo test --workspace --exclude
+solstice-api` (105 execution tests, +3 new:
+`test_build_atomic_swap_transaction_merges_both_legs`,
+`test_build_atomic_swap_transaction_rejects_empty_legs`,
+`test_build_atomic_swap_transaction_rejects_leg_with_no_instructions`)
+plus `cargo test -p solstice-api --lib` all pass. `npx tsc --noEmit`
+passes clean after updating `CrossDexArbFilled`'s TS type to match.
+Confirmed no open positions before restarting `serve`; rebuilt,
+relaunched, and re-armed with the user's config (`max_capital_usd=$15`,
+`strategies_enabled=false`, `cross_dex_arb_enabled=true`,
+`enabled=true`) -- this restart also reset `cross_dex_min_spread`/
+`cross_dex_max_slippage_bps` back to their 0.5%/30bps code defaults
+after an earlier dashboard-side drift to 0.3%/50bps.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-22 (Diagnose wallet-balance drain: real fees + tighter net-edge margin)
 
 ### Problem

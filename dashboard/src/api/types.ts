@@ -198,8 +198,7 @@ export type LiveEvent =
       buy_price: number;
       sell_price: number;
       realized_pnl_usd: number;
-      buy_signature: string | null;
-      sell_signature: string | null;
+      signature: string | null;
     }
   | { type: 'CrossDexArbFailed'; pair_label: string; leg: string; reason: string }
   | { type: 'UntrackedBalanceAdopted'; pair_label: string; quantity: number; estimated_usd: number }

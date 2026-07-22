@@ -13,19 +13,20 @@
 
 use super::config::{LiveTradedPair, LiveTradingConfig};
 use crate::error::{ExecutionError, ExecutionResult};
-use crate::execute_swap;
 use crate::jito::{JitoClient, JitoConfig};
 use crate::order_manager::{Fill, OrderManager};
 use crate::planner::{signal_pair, ExecutionPlan};
 use crate::position_sizing::{PositionSizer, RiskParams};
 use crate::risk::{PreTradeRiskChecker, StopLossManager, TakeProfitManager, TradeApproval};
+use crate::{execute_atomic_arb, execute_swap};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use solana_sdk::pubkey::Pubkey;
 use solstice_blockchain::{SolanaRpcClient, WalletFile};
 use solstice_core::types::{Position, PositionId, Signal, SignalType, TokenPair};
 use solstice_dex::{
-    DexAggregator, JupiterClient, OrcaClient, Quote, QuoteRequest, RaydiumClient, SwapRequest,
+    DexAggregator, DexClient, JupiterClient, OrcaClient, Quote, QuoteRequest, RaydiumClient,
+    SwapRequest,
 };
 use solstice_strategy::{MarketSnapshot, PortfolioState, RiskMetrics, StrategyManager};
 use std::collections::HashMap;
@@ -128,8 +129,10 @@ pub enum LiveEvent {
         buy_price: f64,
         sell_price: f64,
         realized_pnl_usd: f64,
-        buy_signature: Option<String>,
-        sell_signature: Option<String>,
+        /// Both legs land in one transaction (see
+        /// `LiveTradingConfig::cross_dex_arb_enabled`'s doc comment), so
+        /// there is exactly one signature, not a buy/sell pair.
+        signature: Option<String>,
     },
     CrossDexArbFailed {
         pair_label: String,
@@ -1212,17 +1215,18 @@ impl LiveTradingEngine {
     }
 
     /// Runs the cross-DEX arbitrage executor over every configured pair,
-    /// if armed (`cross_dex_arb_enabled`). The intent is for capital to
-    /// keep cycling between quote and base rather than sitting still:
-    /// each pair is either flat (no tracked position, so this looks for
-    /// a fresh buy-low/sell-high opportunity) or holding inventory (a
-    /// buy whose sell leg hasn't landed yet -- from this tick's own
-    /// attempt, a prior failed sell leg, or an on-chain balance adopted
-    /// by `reconcile_untracked_balance` below), in which case this keeps
-    /// retrying the flatten-back-to-quote every tick via the existing
-    /// generic `close_position` (the same path stop-loss/take-profit
-    /// use) rather than leaving it stuck until some price threshold is
-    /// crossed.
+    /// if armed (`cross_dex_arb_enabled`). Each pair is either flat (no
+    /// tracked position, so this looks for a fresh buy-low/sell-high
+    /// opportunity) or, in principle, holding inventory. In steady state
+    /// that second case should be rare to never: `execute_cross_dex_arb`
+    /// executes both legs atomically (one transaction, all-or-nothing),
+    /// so a normal arb cycle never leaves a position behind for this loop
+    /// to find. The check still runs every tick as a defensive net for
+    /// anything that predates atomic execution or arrives from outside
+    /// it -- an on-chain balance adopted by `reconcile_untracked_balance`
+    /// below, or leftover dust from a manual/non-arb source -- flattening
+    /// it back to quote via the existing generic `close_position` (the
+    /// same path stop-loss/take-profit use) rather than leaving it stuck.
     async fn evaluate_cross_dex_arbitrage(&self) {
         let (cross_dex_arb_enabled, min_spread, max_slippage_bps, min_net_edge_bps) = {
             let config = self.config.lock().expect("config lock poisoned");
@@ -1374,18 +1378,21 @@ impl LiveTradingEngine {
         });
     }
 
-    /// Buys `pair.base_mint` on `opportunity.buy_dex` then immediately
-    /// sells the received quantity on `opportunity.sell_dex`. **Not
-    /// atomic** -- these are two separate transactions, so a real price
-    /// move between them (or an outright failure of the second leg) is
-    /// possible; see `LiveTradingConfig::cross_dex_arb_enabled`. If the
-    /// sell leg fails after the buy leg lands, the bought inventory is
-    /// registered as a normal tracked position (protected by
-    /// stop-loss/take-profit from that point on) rather than left an
-    /// untracked wallet balance.
+    /// Buys `pair.base_mint` on `opportunity.buy_dex` and sells it on
+    /// `opportunity.sell_dex` in **one atomic transaction** -- both legs'
+    /// instructions are concatenated (see
+    /// `solstice_execution::build_atomic_swap_transaction`) and submitted
+    /// together, so either both land or neither does. This replaced an
+    /// earlier two-transaction design after a live cycle demonstrated the
+    /// real cost of the gap between separate legs: a buy and sell 22
+    /// seconds apart lost 1.1% to price movement in between, on top of
+    /// normal fees -- money that atomicity, not a wider margin, actually
+    /// fixes. There is no more "sell leg failed, inventory left as a
+    /// tracked position" case: a failed atomic transaction touches
+    /// nothing, so this never strands capital the way the old design
+    /// could.
     async fn execute_cross_dex_arb(&self, pair: &LiveTradedPair, opportunity: ArbOpportunity) {
         let pair_label = pair.label.to_string();
-        let token_pair = TokenPair::new(pair.base_mint, pair.quote_mint);
 
         if !self.is_enabled() {
             self.emit(LiveEvent::WouldTrade {
@@ -1412,13 +1419,10 @@ impl LiveTradingEngine {
         };
 
         // `configured_size_usd` comes from internal bookkeeping
-        // (`capital_deployed_usd`), which can drift from on-chain reality
-        // -- e.g. a prior buy leg that landed but wasn't tracked (see the
-        // balance-delta retry below) leaves `capital_deployed_usd`
-        // understating what's actually already committed. Capping against
-        // the wallet's real quote-token balance means a stale bookkeeping
-        // number can only make this *skip* a trade it shouldn't attempt,
-        // never submit one the wallet can't actually cover.
+        // (`capital_deployed_usd`), which can drift from on-chain reality.
+        // Capping against the wallet's real quote-token balance means a
+        // stale bookkeeping number can only make this *skip* a trade it
+        // shouldn't attempt, never submit one the wallet can't cover.
         let quote_balance_raw = self
             .rpc
             .get_token_balance(&self.wallet_pubkey, &pair.quote_mint)
@@ -1444,7 +1448,7 @@ impl LiveTradingEngine {
             Err(e) => {
                 self.emit(LiveEvent::CrossDexArbFailed {
                     pair_label,
-                    leg: "buy".to_string(),
+                    leg: "atomic".to_string(),
                     reason: format!("failed to load wallet key: {e}"),
                 });
                 return;
@@ -1459,12 +1463,19 @@ impl LiveTradingEngine {
             None => None,
         };
 
-        // --- Leg 1: buy on the cheaper DEX ---
         let Ok(buy_client) = self.dex.get_client(&opportunity.buy_dex) else {
             self.emit(LiveEvent::CrossDexArbFailed {
                 pair_label,
                 leg: "buy".to_string(),
                 reason: format!("failed to resolve {} client", opportunity.buy_dex),
+            });
+            return;
+        };
+        let Ok(sell_client) = self.dex.get_client(&opportunity.sell_dex) else {
+            self.emit(LiveEvent::CrossDexArbFailed {
+                pair_label,
+                leg: "sell".to_string(),
+                reason: format!("failed to resolve {} client", opportunity.sell_dex),
             });
             return;
         };
@@ -1501,125 +1512,29 @@ impl LiveTradingEngine {
                 return;
             }
         };
-
-        let base_balance_before = self
-            .rpc
-            .get_token_balance(&self.wallet_pubkey, &pair.base_mint)
-            .await
-            .unwrap_or(0);
-
-        let buy_outcome = execute_swap(
-            &self.jito,
-            &self.rpc,
-            buy_client.as_ref(),
-            &buy_swap,
-            &buy_quote,
-            &keypair,
-            tip,
-            Duration::from_secs(60),
-            Duration::from_secs(2),
-        )
-        .await;
-
-        let buy_outcome = match buy_outcome {
-            Ok(o) => o,
-            Err(e) => {
-                self.emit(LiveEvent::CrossDexArbFailed {
-                    pair_label,
-                    leg: "buy".to_string(),
-                    reason: e.to_string(),
-                });
-                return;
-            }
-        };
-
-        // Leg 1 landed. Read the actual received quantity from the
-        // balance delta rather than trusting `buy_quote.out_amount` --
-        // the two legs are separate transactions, not atomic, so the
-        // real fill can differ from the quote. A single immediate read
-        // isn't reliable: a load-balanced RPC provider can answer from a
-        // node that hasn't yet caught up to the just-landed transaction,
-        // reading back a stale (pre-buy) balance even though the swap
-        // genuinely succeeded -- confirmed directly against a real
-        // transaction that landed a buy correctly but was reported as
-        // failed for exactly this reason. Retry briefly before concluding
-        // the buy produced nothing.
-        let mut received_quantity = 0u64;
-        for attempt in 0..5 {
-            if attempt > 0 {
-                tokio::time::sleep(Duration::from_millis(500)).await;
-            }
-            let base_balance_after = match self
-                .rpc
-                .get_token_balance(&self.wallet_pubkey, &pair.base_mint)
-                .await
-            {
-                Ok(b) => b,
-                Err(e) => {
-                    warn!(
-                        "failed to read post-buy balance for {} (attempt {}): {}",
-                        pair_label,
-                        attempt + 1,
-                        e
-                    );
-                    continue;
-                }
-            };
-            received_quantity = base_balance_after.saturating_sub(base_balance_before);
-            if received_quantity > 0 {
-                break;
-            }
-        }
-        if received_quantity == 0 {
+        if buy_quote.out_amount == 0 {
             self.emit(LiveEvent::CrossDexArbFailed {
                 pair_label,
                 leg: "buy".to_string(),
-                reason: "buy leg landed but no base token balance increase was observed after \
-                         retrying -- if the wallet's actual balance did increase, this was a \
-                         read-consistency failure, not a lost trade; check on-chain state before \
-                         assuming funds are missing"
-                    .to_string(),
+                reason: format!(
+                    "buy quote from {} returned zero output",
+                    opportunity.buy_dex
+                ),
             });
             return;
         }
 
-        let buy_price = quote_price(pair, &buy_quote);
-
-        // Track this as an open position immediately, before attempting
-        // the sell leg -- if that leg fails below, this inventory must
-        // stay visible and protected by stop-loss/take-profit rather
-        // than becoming an untracked wallet balance.
-        *self.capital_deployed_usd.lock().expect("lock poisoned") += size_usd as f64;
-        self.positions.lock().expect("lock poisoned").insert(
-            token_pair,
-            LivePosition {
-                id: PositionId::new(),
-                pair: token_pair,
-                quantity_raw: received_quantity,
-                entry_price: buy_price,
-                current_price: buy_price,
-                allocated_usd: size_usd as f64,
-                opened_at: Utc::now(),
-            },
-        );
-
-        // --- Leg 2: sell on the pricier DEX ---
-        let Ok(sell_client) = self.dex.get_client(&opportunity.sell_dex) else {
-            self.emit(LiveEvent::CrossDexArbFailed {
-                pair_label,
-                leg: "sell".to_string(),
-                reason: format!(
-                    "failed to resolve {} client -- position tracked, protected by stop-loss/take-profit",
-                    opportunity.sell_dex
-                ),
-            });
-            return;
-        };
-
+        // The sell leg's instructions are built to spend exactly
+        // `buy_quote.out_amount` -- the amount the buy leg is *expected*
+        // to produce. Both legs land in the same transaction, so if the
+        // real buy output ever falls short of this, the sell instruction
+        // can't be satisfied and Solana's preflight simulation rejects
+        // the whole transaction before anything moves or any fee beyond
+        // the attempt is paid.
         let sell_swap = SwapRequest {
             input_mint: pair.base_mint,
             output_mint: pair.quote_mint,
-            amount: received_quantity,
+            amount: buy_quote.out_amount,
             payer: self.wallet_pubkey,
             slippage_bps,
         };
@@ -1639,7 +1554,7 @@ impl LiveTradingEngine {
                     pair_label,
                     leg: "sell".to_string(),
                     reason: format!(
-                        "failed to fetch sell quote from {}: {e} -- position tracked, protected by stop-loss/take-profit",
+                        "failed to fetch sell quote from {}: {e}",
                         opportunity.sell_dex
                     ),
                 });
@@ -1647,12 +1562,15 @@ impl LiveTradingEngine {
             }
         };
 
-        let sell_outcome = execute_swap(
+        let legs: [(&dyn DexClient, &SwapRequest, &Quote); 2] = [
+            (buy_client.as_ref(), &buy_swap, &buy_quote),
+            (sell_client.as_ref(), &sell_swap, &sell_quote),
+        ];
+
+        let outcome = execute_atomic_arb(
             &self.jito,
             &self.rpc,
-            sell_client.as_ref(),
-            &sell_swap,
-            &sell_quote,
+            &legs,
             &keypair,
             tip,
             Duration::from_secs(60),
@@ -1660,18 +1578,14 @@ impl LiveTradingEngine {
         )
         .await;
 
-        match sell_outcome {
+        match outcome {
             Ok(outcome) => {
+                let buy_price = quote_price(pair, &buy_quote);
                 let realized_sell_price = sell_price(pair, &sell_quote);
                 let exit_value_usd =
                     sell_quote.out_amount as f64 / 10f64.powi(pair.quote_decimals as i32);
                 let realized_pnl = exit_value_usd - size_usd as f64;
 
-                self.positions
-                    .lock()
-                    .expect("lock poisoned")
-                    .remove(&token_pair);
-                *self.capital_deployed_usd.lock().expect("lock poisoned") -= size_usd as f64;
                 *self.realized_pnl_usd.lock().expect("lock poisoned") += realized_pnl;
 
                 self.emit(LiveEvent::CrossDexArbFilled {
@@ -1682,15 +1596,14 @@ impl LiveTradingEngine {
                     buy_price,
                     sell_price: realized_sell_price,
                     realized_pnl_usd: realized_pnl,
-                    buy_signature: buy_outcome.signatures.first().map(|s| s.to_string()),
-                    sell_signature: outcome.signatures.first().map(|s| s.to_string()),
+                    signature: outcome.signatures.first().map(|s| s.to_string()),
                 });
             }
             Err(e) => {
                 self.emit(LiveEvent::CrossDexArbFailed {
                     pair_label,
-                    leg: "sell".to_string(),
-                    reason: format!("{e} -- position tracked, protected by stop-loss/take-profit"),
+                    leg: "atomic".to_string(),
+                    reason: e.to_string(),
                 });
             }
         }

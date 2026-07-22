@@ -27,7 +27,10 @@ pub use risk::{
     PositionLimits, PreTradeRiskChecker, RiskLimitStatus, RiskLimits, RiskMonitor, StopLossManager,
     StopLossTrigger, TradeApproval,
 };
-pub use swap::{build_swap_transaction, execute_swap, MAX_TRANSACTION_SIZE};
+pub use swap::{
+    build_atomic_swap_transaction, build_swap_transaction, execute_atomic_arb, execute_swap,
+    MAX_TRANSACTION_SIZE,
+};
 
 #[cfg(test)]
 mod tests {
