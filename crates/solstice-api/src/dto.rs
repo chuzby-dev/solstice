@@ -39,6 +39,9 @@ pub struct LiveConfigRequest {
     /// Per-leg slippage tolerance (basis points) for the cross-DEX
     /// arbitrage executor -- separate from the general trading slippage.
     pub cross_dex_max_slippage_bps: Option<u32>,
+    /// Minimum required profit margin (basis points) after assuming both
+    /// legs slip by the full `cross_dex_max_slippage_bps` tolerance.
+    pub cross_dex_min_net_edge_bps: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]

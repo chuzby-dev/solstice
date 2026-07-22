@@ -105,6 +105,9 @@ pub enum LiveEvent {
     CrossDexMaxSlippageChanged {
         cross_dex_max_slippage_bps: u32,
     },
+    CrossDexMinNetEdgeChanged {
+        cross_dex_min_net_edge_bps: u32,
+    },
     CrossDexOpportunityDetected {
         pair_label: String,
         buy_dex: String,
@@ -168,6 +171,7 @@ pub struct LiveStatusSnapshot {
     pub cross_dex_arb_enabled: bool,
     pub cross_dex_min_spread: f64,
     pub cross_dex_max_slippage_bps: u32,
+    pub cross_dex_min_net_edge_bps: u32,
     pub capital_deployed_usd: f64,
     pub capital_available_usd: f64,
     pub realized_pnl_usd: f64,
@@ -208,6 +212,16 @@ struct ArbOpportunity {
     buy_price: f64,
     sell_price: f64,
     spread: f64,
+}
+
+/// The actual spread required to attempt a cross-DEX arb trade: the
+/// operator-set `min_spread` floor, or -- if larger -- a cost-aware floor
+/// assuming both legs slip against the trade by the full
+/// `max_slippage_bps` tolerance plus a required net margin on top. See
+/// `LiveTradingConfig::cross_dex_min_net_edge_bps`'s doc comment for why
+/// `min_spread` alone isn't a safe gate.
+fn required_cross_dex_spread(min_spread: f64, max_slippage_bps: u32, min_net_edge_bps: u32) -> f64 {
+    min_spread.max(2.0 * max_slippage_bps as f64 / 10_000.0 + min_net_edge_bps as f64 / 10_000.0)
 }
 
 pub struct LiveTradingEngine {
@@ -432,6 +446,19 @@ impl LiveTradingEngine {
         });
     }
 
+    /// Set the minimum required profit margin (in basis points) that must
+    /// remain after assuming both legs of a cross-DEX arb slip against the
+    /// trade by the full `cross_dex_max_slippage_bps` tolerance -- see
+    /// `LiveTradingConfig::cross_dex_min_net_edge_bps`'s doc comment.
+    pub fn set_cross_dex_min_net_edge_bps(&self, cross_dex_min_net_edge_bps: u32) {
+        let mut config = self.config.lock().expect("config lock poisoned");
+        config.cross_dex_min_net_edge_bps = cross_dex_min_net_edge_bps;
+        drop(config);
+        self.emit(LiveEvent::CrossDexMinNetEdgeChanged {
+            cross_dex_min_net_edge_bps,
+        });
+    }
+
     fn pair_label(&self, pair: &TokenPair) -> String {
         self.pairs
             .iter()
@@ -455,6 +482,7 @@ impl LiveTradingEngine {
             cross_dex_arb_enabled: config.cross_dex_arb_enabled,
             cross_dex_min_spread: config.cross_dex_min_spread,
             cross_dex_max_slippage_bps: config.cross_dex_max_slippage_bps,
+            cross_dex_min_net_edge_bps: config.cross_dex_min_net_edge_bps,
             capital_deployed_usd,
             capital_available_usd: (config.max_capital_usd - capital_deployed_usd).max(0.0),
             realized_pnl_usd: *self.realized_pnl_usd.lock().expect("lock poisoned"),
@@ -1149,13 +1177,21 @@ impl LiveTradingEngine {
     /// use) rather than leaving it stuck until some price threshold is
     /// crossed.
     async fn evaluate_cross_dex_arbitrage(&self) {
-        let (cross_dex_arb_enabled, min_spread) = {
+        let (cross_dex_arb_enabled, min_spread, max_slippage_bps, min_net_edge_bps) = {
             let config = self.config.lock().expect("config lock poisoned");
-            (config.cross_dex_arb_enabled, config.cross_dex_min_spread)
+            (
+                config.cross_dex_arb_enabled,
+                config.cross_dex_min_spread,
+                config.cross_dex_max_slippage_bps,
+                config.cross_dex_min_net_edge_bps,
+            )
         };
         if !cross_dex_arb_enabled {
             return;
         }
+
+        let required_spread =
+            required_cross_dex_spread(min_spread, max_slippage_bps, min_net_edge_bps);
 
         for pair in self.pairs.iter().copied() {
             let token_pair = TokenPair::new(pair.base_mint, pair.quote_mint);
@@ -1180,7 +1216,7 @@ impl LiveTradingEngine {
             let Some(opportunity) = self.find_arb_opportunity(&pair).await else {
                 continue;
             };
-            if opportunity.spread < min_spread {
+            if opportunity.spread < required_spread {
                 continue;
             }
 
@@ -1819,6 +1855,7 @@ mod tests {
             cross_dex_arb_enabled: false,
             cross_dex_min_spread: 0.015,
             cross_dex_max_slippage_bps: 30,
+            cross_dex_min_net_edge_bps: 10,
             slippage_bps: 50,
             poll_interval: Duration::from_secs(3600),
             tip_lamports: None,
@@ -2170,6 +2207,33 @@ mod tests {
 
         engine.set_cross_dex_max_slippage_bps(20);
         assert_eq!(engine.status().cross_dex_max_slippage_bps, 20);
+    }
+
+    #[test]
+    fn test_set_cross_dex_min_net_edge_bps_updates_status() {
+        let pair = test_pair();
+        let engine = test_engine(pair, 50.0);
+        assert_eq!(engine.status().cross_dex_min_net_edge_bps, 10);
+
+        engine.set_cross_dex_min_net_edge_bps(25);
+        assert_eq!(engine.status().cross_dex_min_net_edge_bps, 25);
+    }
+
+    #[test]
+    fn test_required_cross_dex_spread_uses_operator_floor_when_higher() {
+        // min_spread (1.5%) exceeds the cost-aware floor (30bps slippage
+        // * 2 + 10bps margin = 70bps), so the operator's tighter
+        // requirement wins.
+        assert_eq!(required_cross_dex_spread(0.015, 30, 10), 0.015);
+    }
+
+    #[test]
+    fn test_required_cross_dex_spread_uses_cost_floor_when_higher() {
+        // A loose slippage tolerance (70bps/leg) with a low min_spread
+        // (0.1%) must not let a trade through on a spread that a single
+        // leg's slippage alone could erase -- the cost-aware floor
+        // (2 * 70bps + 10bps = 150bps) wins instead.
+        assert_eq!(required_cross_dex_spread(0.001, 70, 10), 0.015);
     }
 
     #[tokio::test]

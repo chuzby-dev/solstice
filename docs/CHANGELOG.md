@@ -6,6 +6,56 @@
 
 ---
 
+## [0.1.0-alpha] - 2026-07-22 (Cost-aware cross-DEX arb gate)
+
+### Problem
+
+User asked why the cross-DEX arb executor was losing money
+(realized P&L went negative over a handful of cycles). Diagnosis:
+`find_arb_opportunity`'s spread check compared only raw quoted prices
+against `cross_dex_min_spread` (0.5%). It never accounted for what
+actually eats a trade -- each of the two non-atomic legs can slip by up
+to `cross_dex_max_slippage_bps` (which had drifted to 70bps live, 14x
+the 50bps that a 0.5% spread minus a matching cost budget would allow),
+plus real execution-price movement in the seconds between the buy
+confirming and the sell landing. A "profitable"-looking quoted spread
+routinely nets a loss once those costs are paid.
+
+### Fix
+
+Added `cross_dex_min_net_edge_bps` to `LiveTradingConfig`
+(`crates/solstice-execution/src/live/config.rs`, default 10bps) and a
+pure `required_cross_dex_spread(min_spread, max_slippage_bps,
+min_net_edge_bps)` helper in `engine.rs`. `evaluate_cross_dex_arbitrage`
+now gates on `max(cross_dex_min_spread, 2 * cross_dex_max_slippage_bps +
+cross_dex_min_net_edge_bps)` instead of `cross_dex_min_spread` alone --
+so a loose slippage tolerance automatically raises the spread required
+to trade rather than silently eating into the margin. Wired the new
+field through `LiveEvent::CrossDexMinNetEdgeChanged`,
+`set_cross_dex_min_net_edge_bps`, `LiveStatusSnapshot`, the
+`/api/v1/live/config` DTO/handler, and the dashboard (stat tile, event
+description, editable config panel). Also reset
+`cross_dex_max_slippage_bps` back to its 30bps code default on this
+restart -- the running instance had drifted to 70bps via an earlier
+runtime config call.
+
+### Verified
+
+`cargo fmt --all`, `cargo clippy --workspace --lib --bins --tests
+--all-features -- -D warnings`, `cargo test --workspace --exclude
+solstice-api` plus `cargo test -p solstice-api --lib` all pass,
+including new unit tests
+(`test_required_cross_dex_spread_uses_operator_floor_when_higher`,
+`test_required_cross_dex_spread_uses_cost_floor_when_higher`,
+`test_set_cross_dex_min_net_edge_bps_updates_status`). `npx tsc
+--noEmit` passes clean. Confirmed no open positions before restarting
+`serve`; restored `max_capital_usd`/`strategies_enabled` to their prior
+values via `/api/v1/live/config` post-restart. Live trading and
+cross-DEX arb left **disarmed** pending explicit user confirmation to
+re-enable.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-22 (Fix: BONK prices displaying as $0.0000)
 
 ### Problem

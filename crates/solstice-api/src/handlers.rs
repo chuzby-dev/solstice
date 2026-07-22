@@ -288,6 +288,15 @@ pub async fn live_set_config(
         live.set_cross_dex_max_slippage_bps(cross_dex_max_slippage_bps);
     }
 
+    if let Some(cross_dex_min_net_edge_bps) = body.cross_dex_min_net_edge_bps {
+        if cross_dex_min_net_edge_bps > 10_000 {
+            return Err(ApiError::BadRequest(
+                "cross_dex_min_net_edge_bps must be between 0 and 10000".to_string(),
+            ));
+        }
+        live.set_cross_dex_min_net_edge_bps(cross_dex_min_net_edge_bps);
+    }
+
     // Applied after `cross_dex_min_spread`/`cross_dex_max_slippage_bps` so
     // a single request can tune the thresholds and arm the executor in
     // one call.

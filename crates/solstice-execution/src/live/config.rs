@@ -108,6 +108,18 @@ pub struct LiveTradingConfig {
     /// `cross_dex_min_spread` divided by two. Adjustable at runtime via
     /// `LiveTradingEngine::set_cross_dex_max_slippage_bps`.
     pub cross_dex_max_slippage_bps: u32,
+    /// Minimum profit margin, in basis points, required *after* assuming
+    /// both legs slip against the trade by the full
+    /// `cross_dex_max_slippage_bps` tolerance. `cross_dex_min_spread`
+    /// alone only checks the raw quoted price gap -- it says nothing
+    /// about whether that gap survives paying slippage on two separate,
+    /// non-atomic transactions plus network/priority fees. The executor's
+    /// real gate is `max(cross_dex_min_spread, 2 * cross_dex_max_slippage_bps
+    /// + cross_dex_min_net_edge_bps)`, so raising the slippage tolerance
+    /// automatically raises the spread required to trade instead of
+    /// silently eating into the margin. Adjustable at runtime via
+    /// `LiveTradingEngine::set_cross_dex_min_net_edge_bps`.
+    pub cross_dex_min_net_edge_bps: u32,
     /// Slippage tolerance passed to Jupiter for both price sampling and
     /// execution quotes. `execute_planned_trade` re-fetches a quote right
     /// before submitting, but `JupiterClient::build_swap_instructions`
@@ -165,6 +177,7 @@ impl Default for LiveTradingConfig {
             cross_dex_arb_enabled: false,
             cross_dex_min_spread: 0.005,
             cross_dex_max_slippage_bps: 30,
+            cross_dex_min_net_edge_bps: 10,
             slippage_bps: 150,
             poll_interval: Duration::from_secs(15),
             tip_lamports: None,
