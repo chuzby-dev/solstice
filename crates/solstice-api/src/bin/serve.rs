@@ -46,6 +46,17 @@ const RAY_MINT: &str = "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R";
 const RAYDIUM_RAY_USDC_POOL: &str = "6UmmUiYoBjSrhakAobJw8BvkmJtDVxaeBtbt7rxWo1mg";
 const ORCA_RAY_USDC_WHIRLPOOL: &str = "A2J7vmG9xAdWUzYscN7oQssxZBFihwD3UonkWB8Kod1A";
 
+// BONK/USDC: the widest of nine USDC pairs checked directly against
+// Raydium's and Orca's own public APIs at verification time (~0.58%,
+// still short of the user's 1% target -- every established pair checked
+// was, since real cross-DEX gaps that wide are typically fleeting rather
+// than a standing opportunity), but decent liquidity on both sides
+// (Raydium ~$22.6K TVL, Orca ~$34.7K TVL) and worth having in rotation
+// since spreads shift with volatility.
+const BONK_MINT: &str = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263";
+const RAYDIUM_BONK_USDC_POOL: &str = "G7mw1d83ismcQJKkzt62Ug4noXCjVhu3eV7U5EMgge6Z";
+const ORCA_BONK_USDC_WHIRLPOOL: &str = "8QaXeHBrShJTdtN1rWCccBxpSVvKksQ2PCu5nufb2zbk";
+
 fn main() {
     // See solstice-simulation's paper_trade.rs for why this needs a
     // larger-than-default stack on Windows debug builds.
@@ -167,6 +178,18 @@ async fn async_main() {
                         orca_pool: Pubkey::from_str(ORCA_RAY_USDC_WHIRLPOOL).ok(),
                     };
 
+                    let bonk = Pubkey::from_str(BONK_MINT).expect("BONK_MINT is a valid pubkey");
+                    let bonk_usdc_pair = LiveTradedPair {
+                        label: "BONK/USDC",
+                        base_mint: bonk,
+                        base_decimals: 5,
+                        quote_mint: usdc,
+                        quote_decimals: 6,
+                        reference_amount: 10_000_000_000, // 100,000 BONK (~$0.30)
+                        raydium_pool: Pubkey::from_str(RAYDIUM_BONK_USDC_POOL).ok(),
+                        orca_pool: Pubkey::from_str(ORCA_BONK_USDC_WHIRLPOOL).ok(),
+                    };
+
                     let live_strategies = Arc::new(StrategyManager::new(StrategyConfig::default()));
                     live_strategies
                         .register_strategy(Arc::new(SimpleMovingAverageStrategy::new(
@@ -188,7 +211,7 @@ async fn async_main() {
                         WalletFile::at(&path),
                         rpc,
                         live_strategies,
-                        vec![pair, ray_usdc_pair],
+                        vec![pair, ray_usdc_pair, bonk_usdc_pair],
                         LiveTradingConfig::default(),
                     ) {
                         Ok(engine) => {

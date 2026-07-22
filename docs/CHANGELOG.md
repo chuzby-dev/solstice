@@ -6,6 +6,55 @@
 
 ---
 
+## [0.1.0-alpha] - 2026-07-22 (Third pair: BONK/USDC, widest of nine pairs surveyed)
+
+### Problem
+
+User asked for a pair showing at least a 1% cross-DEX spread. Rather than
+guess, surveyed nine real USDC pairs directly against Raydium's
+(`poolType=standard`) and Orca's (`tokensBothOf`) own public APIs: JTO, W,
+PYTH, WIF, MEW, SLERF, and GUAC had no real Raydium AMM v4 pool at all
+(dead, or only CLMM, which this workspace's `RaydiumClient` doesn't
+target); of the rest, none reached 1%:
+
+| Pair | Spread | Liquidity |
+|---|---|---|
+| BONK/USDC | ~0.58% | Raydium $22.6K / Orca $34.7K |
+| RAY/USDC | ~0.57% | Raydium $3.9M / Orca $10.4K |
+| SAMO/USDC | ~0.48% | Raydium $1.2K / Orca $4.2K |
+| mSOL/USDC | ~0.43% | deep both sides (liquid-staking derivative, tightly tracked by design) |
+| ORCA/USDC | ~0.30% | Raydium $717 / Orca $107K |
+| POPCAT/USDC | ~0.04% | deep Raydium ($572K) dominates a thin Orca side |
+
+Reported this honestly rather than picking one and overselling it: real,
+*standing* 1%+ spreads on established tokens aren't really findable this
+way -- they're typically fleeting (a volatility spike, a momentarily
+desynced thin pool), not a snapshot-detectable opportunity, and pushing
+further would mean much lower-liquidity, higher-risk tokens.
+
+### What was added
+
+**BONK/USDC**, the widest surveyed (~0.58%) with liquidity deep enough on
+both sides for this project's trade sizes: Raydium AMM v4 pool
+`G7mw1d83ismcQJKkzt62Ug4noXCjVhu3eV7U5EMgge6Z` ($22.6K TVL), Orca whirlpool
+`8QaXeHBrShJTdtN1rWCccBxpSVvKksQ2PCu5nufb2zbk` ($34.7K TVL). Added as a
+third `LiveTradedPair` in `crates/solstice-api/src/bin/serve.rs`, same
+pattern as RAY/USDC -- no separate engine or config. `reference_amount`
+set to 100,000 BONK raw units (~$0.30 at survey-time price), scaled up
+from RAY/SOL's reference amounts since BONK's 5-decimal, sub-cent unit
+price needs a much larger raw quantity to represent a comparably small
+quote-sampling amount.
+
+### Verified
+
+`cargo check -p solstice-api --bin serve` (server was running), `cargo
+fmt --all`, `cargo clippy --workspace --lib --bins --tests --all-features
+-D warnings`, and `cargo test --workspace` all pass clean. No new unit
+tests, consistent with how the other two pairs' config literals aren't
+separately tested either.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-22 (Second pair: RAY/USDC, for a real spread SOL/USDC won't offer)
 
 ### Problem
