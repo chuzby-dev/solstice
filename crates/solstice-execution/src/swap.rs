@@ -20,6 +20,7 @@ use crate::error::{ExecutionError, ExecutionResult};
 use crate::jito::{build_tip_instruction, submit_with_fallback, JitoClient, SubmissionOutcome};
 use solana_sdk::address_lookup_table::state::AddressLookupTable;
 use solana_sdk::hash::Hash;
+use solana_sdk::instruction::Instruction;
 use solana_sdk::message::{v0, AddressLookupTableAccount, VersionedMessage};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
@@ -58,6 +59,43 @@ async fn fetch_lookup_table_account(
         key: table,
         addresses: parsed.addresses.into_owned(),
     })
+}
+
+/// Two instructions are equal for dedup purposes if they'd have the
+/// exact same on-chain effect: same program, same data, same accounts in
+/// the same order with the same signer/writable flags. Written by hand
+/// (rather than deriving/relying on `Instruction: PartialEq`) so this
+/// doesn't depend on that trait existing upstream.
+fn instructions_equal(a: &Instruction, b: &Instruction) -> bool {
+    a.program_id == b.program_id
+        && a.data == b.data
+        && a.accounts.len() == b.accounts.len()
+        && a.accounts.iter().zip(b.accounts.iter()).all(|(x, y)| {
+            x.pubkey == y.pubkey && x.is_signer == y.is_signer && x.is_writable == y.is_writable
+        })
+}
+
+/// Drop exact-duplicate instructions, keeping each one's first
+/// occurrence and preserving order otherwise. Every `DexClient` in this
+/// workspace prepends an idempotent ATA-creation instruction for each
+/// mint it touches; when two legs of an atomic transaction share a mint
+/// (the common case -- the sell leg's input is the buy leg's output),
+/// each emits its own byte-identical copy. Removing the duplicate is
+/// always safe (the instruction is a no-op if the account already
+/// exists) and buys back real bytes against the 1232-byte transaction
+/// limit -- confirmed necessary against a live RAY/USDC atomic attempt
+/// that came in at 1274 bytes, over the limit even with 3 ALTs applied.
+fn dedup_instructions(instructions: Vec<Instruction>) -> Vec<Instruction> {
+    let mut deduped: Vec<Instruction> = Vec::with_capacity(instructions.len());
+    for instruction in instructions {
+        if !deduped
+            .iter()
+            .any(|kept| instructions_equal(kept, &instruction))
+        {
+            deduped.push(instruction);
+        }
+    }
+    deduped
 }
 
 /// Fetch swap instructions from `dex` for `swap`/`quote` and assemble them
@@ -180,6 +218,19 @@ pub async fn build_atomic_swap_transaction(
             }
         }
     }
+
+    // Every `DexClient` here prepends an idempotent ATA-creation
+    // instruction for each mint it touches -- fine on its own, but two
+    // legs sharing a mint (the common case: the sell leg's input is the
+    // buy leg's output) each emit their own byte-identical copy. Left in,
+    // this was enough to push a real RAY/USDC atomic transaction to 1274
+    // bytes, over the 1232-byte limit even with 3 ALTs applied. Since
+    // `create_associated_token_account_idempotent` is a no-op if the
+    // account already exists, dropping exact-duplicate instructions
+    // (keeping the first occurrence) is always safe and buys back exactly
+    // the redundant bytes -- never touches a genuinely distinct swap
+    // instruction, since no two of those are ever byte-identical.
+    let instructions = dedup_instructions(instructions);
 
     let lookup_table_accounts = if lookup_tables.is_empty() {
         Vec::new()
@@ -536,6 +587,36 @@ mod tests {
         // Both legs' instructions must be present in one transaction --
         // the whole point of atomicity.
         assert_eq!(transaction.message.instructions().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_build_atomic_swap_transaction_dedups_shared_setup_instruction() {
+        let payer = Keypair::new();
+        // Simulates both legs prepending the exact same idempotent
+        // ATA-creation instruction (the common case: the sell leg's
+        // input mint is the buy leg's output mint) plus one instruction
+        // unique to each leg.
+        let shared_setup = small_instruction(payer.pubkey());
+        let buy_dex = MockDex {
+            instructions: vec![shared_setup.clone(), small_instruction(payer.pubkey())],
+        };
+        let sell_dex = MockDex {
+            instructions: vec![shared_setup, small_instruction(payer.pubkey())],
+        };
+        let rpc = test_rpc();
+        let swap = sample_swap(payer.pubkey());
+        let quote = sample_quote();
+
+        let legs: [(&dyn DexClient, &SwapRequest, &Quote); 2] =
+            [(&buy_dex, &swap, &quote), (&sell_dex, &swap, &quote)];
+
+        let transaction = build_atomic_swap_transaction(&legs, &rpc, Hash::default(), &payer)
+            .await
+            .unwrap();
+
+        // 4 instructions went in (2 per leg), but the shared setup
+        // instruction should only appear once: 3 total, not 4.
+        assert_eq!(transaction.message.instructions().len(), 3);
     }
 
     #[tokio::test]

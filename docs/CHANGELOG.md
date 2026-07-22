@@ -6,6 +6,49 @@
 
 ---
 
+## [0.1.0-alpha] - 2026-07-22 (Fix: atomic arb transaction over the 1232-byte limit)
+
+### Problem
+
+User reported a real failure right after atomic execution shipped:
+`ARB FAILED (atomic leg) on RAY/USDC: failed to build swap transaction:
+assembled atomic arb transaction is 1274 bytes, exceeds the 1232-byte
+network limit even with 3 address lookup table(s) applied`. Root
+cause: every `DexClient` in this workspace prepends an idempotent
+ATA-creation instruction (`create_associated_token_account_idempotent`)
+for each mint it touches. Concatenating two legs that share a mint --
+the normal case, since the sell leg's input is the buy leg's output --
+means each leg emits its own byte-identical copy of that instruction.
+Two redundant no-op instructions were enough to push a real RAY/USDC
+atomic transaction over the limit.
+
+### Fix
+
+Added `dedup_instructions`/`instructions_equal` to
+`crates/solstice-execution/src/swap.rs`: after concatenating every
+leg's instructions in `build_atomic_swap_transaction`, drop exact
+duplicates (same program, data, and accounts including signer/writable
+flags), keeping each one's first occurrence and otherwise preserving
+order. Always safe -- the instruction is a no-op if the account
+already exists -- and never touches a genuinely distinct swap
+instruction, since no two of those are ever byte-identical.
+
+### Verified
+
+`cargo fmt --all`, `cargo clippy --workspace --lib --bins --tests
+--all-features -- -D warnings`, `cargo test --workspace --exclude
+solstice-api` (106 execution tests, +1 new
+`test_build_atomic_swap_transaction_dedups_shared_setup_instruction`,
+which fabricates two legs sharing one identical setup instruction and
+asserts the assembled transaction has 3 instructions, not 4) plus
+`cargo test -p solstice-api --lib` all pass. Confirmed no open
+positions before restarting `serve`; rebuilt, relaunched, and re-armed
+with the user's config (`max_capital_usd=$15`,
+`strategies_enabled=false`, `cross_dex_arb_enabled=true`,
+`enabled=true`).
+
+---
+
 ## [0.1.0-alpha] - 2026-07-22 (Make cross-DEX arb atomic: one transaction, not two)
 
 ### Problem
