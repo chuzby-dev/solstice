@@ -32,6 +32,20 @@ const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const RAYDIUM_SOL_USDC_POOL: &str = "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2";
 const ORCA_SOL_USDC_WHIRLPOOL: &str = "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE";
 
+// RAY/USDC: much thinner liquidity than SOL/USDC (Raydium pool ~$3.9M
+// TVL vs SOL/USDC's hundreds of millions; Orca pool ~$10K TVL), so it's
+// less picked-over by fast professional arb bots and has shown a real,
+// persistent cross-DEX spread (~0.5-0.6% observed directly via Raydium's
+// and Orca's own public APIs at the time these addresses were verified)
+// -- unlike SOL/USDC, where that spread is usually arbed away in
+// sub-second time. Addresses independently confirmed against each
+// protocol's own API (Raydium's `/pools/info/mint?poolType=standard`,
+// Orca's `/v2/solana/pools?tokensBothOf=...`), the same way the SOL/USDC
+// pair above was.
+const RAY_MINT: &str = "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R";
+const RAYDIUM_RAY_USDC_POOL: &str = "6UmmUiYoBjSrhakAobJw8BvkmJtDVxaeBtbt7rxWo1mg";
+const ORCA_RAY_USDC_WHIRLPOOL: &str = "A2J7vmG9xAdWUzYscN7oQssxZBFihwD3UonkWB8Kod1A";
+
 fn main() {
     // See solstice-simulation's paper_trade.rs for why this needs a
     // larger-than-default stack on Windows debug builds.
@@ -141,6 +155,18 @@ async fn async_main() {
                         orca_pool: Pubkey::from_str(ORCA_SOL_USDC_WHIRLPOOL).ok(),
                     };
 
+                    let ray = Pubkey::from_str(RAY_MINT).expect("RAY_MINT is a valid pubkey");
+                    let ray_usdc_pair = LiveTradedPair {
+                        label: "RAY/USDC",
+                        base_mint: ray,
+                        base_decimals: 6,
+                        quote_mint: usdc,
+                        quote_decimals: 6,
+                        reference_amount: 1_000_000, // 1 RAY
+                        raydium_pool: Pubkey::from_str(RAYDIUM_RAY_USDC_POOL).ok(),
+                        orca_pool: Pubkey::from_str(ORCA_RAY_USDC_WHIRLPOOL).ok(),
+                    };
+
                     let live_strategies = Arc::new(StrategyManager::new(StrategyConfig::default()));
                     live_strategies
                         .register_strategy(Arc::new(SimpleMovingAverageStrategy::new(
@@ -162,7 +188,7 @@ async fn async_main() {
                         WalletFile::at(&path),
                         rpc,
                         live_strategies,
-                        vec![pair],
+                        vec![pair, ray_usdc_pair],
                         LiveTradingConfig::default(),
                     ) {
                         Ok(engine) => {

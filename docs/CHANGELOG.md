@@ -6,6 +6,54 @@
 
 ---
 
+## [0.1.0-alpha] - 2026-07-22 (Second pair: RAY/USDC, for a real spread SOL/USDC won't offer)
+
+### Problem
+
+The user correctly suspected SOL/USDC would rarely offer a spread wide
+enough to clear the arb executor's real round-trip cost -- it's one of
+the most liquid, most heavily arbed pairs on Solana, kept tight by
+professional MEV bots operating at sub-second, same-block speed. A
+~15s-polling, two-sequential-transaction retail bot has little chance of
+catching a meaningful gap there before faster players already have.
+Agreed plan: keep SOL/USDC configured, and add a second, less efficient
+pair genuinely likely to show a capturable spread.
+
+### What was found and added
+
+Queried Raydium's (`api-v3.raydium.io/pools/info/mint?poolType=standard`)
+and Orca's (`api.orca.so/v2/solana/pools?tokensBothOf=...`) own public
+APIs directly -- not guessed -- for a pair with both a real Raydium AMM
+v4 pool (the program this workspace's `RaydiumClient` actually targets;
+several higher-TVL candidates turned out to only have CLMM pools, which
+use a different, unsupported program) and a real Orca whirlpool, with
+liquidity deep enough that this project's trade sizes ($15-25) stay a
+small fraction of pool depth.
+
+**RAY/USDC**: Raydium AMM v4 pool `6UmmUiYoBjSrhakAobJw8BvkmJtDVxaeBtbt7rxWo1mg`
+($3.9M TVL), Orca whirlpool `A2J7vmG9xAdWUzYscN7oQssxZBFihwD3UonkWB8Kod1A`
+($10.4K TVL) -- much thinner than SOL/USDC on both sides, and showed a
+real ~0.5-0.6% price gap between the two venues at verification time
+(Raydium ~$0.7016, Orca ~$0.7056), well above the ~0.5-0.6% round-trip
+cost floor discussed in the prior "breaking even" conversation. Added as
+a second `LiveTradedPair` (`crates/solstice-api/src/bin/serve.rs`) in the
+same `LiveTradingEngine`, so it's evaluated by the cross-DEX arb executor
+(and, if `strategies_enabled`, `SpreadArbitrageStrategy`, which is
+pair-agnostic) right alongside SOL/USDC every tick -- no separate engine
+or config needed.
+
+### Verified
+
+`cargo check -p solstice-api --bin serve` (server was running; a full
+`build` was deferred to the next restart per the established binary-lock
+workaround), `cargo fmt --all`, `cargo clippy --workspace --lib --bins
+--tests --all-features -D warnings`, and `cargo test --workspace` all
+pass clean. No new unit tests -- `serve.rs`'s pair wiring is a config
+literal, not logic, consistent with how the SOL/USDC pair itself isn't
+separately unit-tested either.
+
+---
+
 ## [0.1.0-alpha] - 2026-07-22 (Continuous capital cycling + untracked-balance reconciliation)
 
 ### Problem
