@@ -316,12 +316,34 @@ async function scanWallet(){
 
     const items = [];
 
+    log('scan-log', `Classifying ${coreAssets.length} Generations (mpl-core) assets...\n`, true);
+    const otherAuthorities = [...new Set(
+      coreAssets
+        .map(a => a.plugins?.freeze_delegate?.authority?.address)
+        .filter(addr => addr && addr !== POOL_CORE.toString())
+    )];
+    let authorityOwnerMap = {};
+    if(otherAuthorities.length > 0){
+      const authInfos = await rpc('getMultipleAccounts', [otherAuthorities, {encoding:'base64'}]);
+      otherAuthorities.forEach((addr, i) => { authorityOwnerMap[addr] = authInfos.value[i]?.owner; });
+    }
+
     for(const a of coreAssets){
       const authority = a.plugins?.freeze_delegate?.authority?.address;
+      let category;
+      if(authority === POOL_CORE.toString()){
+        category = 'core_asset_known_pool';
+      } else if(authorityOwnerMap[authority] === PROGRAM_LEGACY_ID){
+        // Not the known pool, but still just another pool PDA owned by the
+        // dead legacy program - same unrecoverable status, not "unidentified".
+        category = 'legacy_dead';
+      } else {
+        category = 'core_asset_other_pool';
+      }
       items.push({
         mint: a.id,
         name: a.content?.metadata?.name || a.id.slice(0,8),
-        category: authority === POOL_CORE.toString() ? 'core_asset_known_pool' : 'core_asset_other_pool',
+        category,
         collection: (a.grouping||[]).find(g=>g.group_key==='collection')?.group_value,
       });
     }
