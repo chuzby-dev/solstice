@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#12100D" />
+<title>Comb — NFT Classifier</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="icon.svg" />
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500;700&display=swap');
+  :root{
+    --bg:#12100D; --surface:#1C1811; --surface-2:#241F16; --line:#34301F;
+    --amber:#E8A33D; --amber-dim:#7A5A24; --thawed:#6FAE8A; --danger:#C1543F;
+    --text:#F2EBDD; --text-dim:#948A73; --mono:'JetBrains Mono',monospace;
+    --display:'Space Grotesk',sans-serif; --body:'IBM Plex Sans',sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;background:var(--bg);color:var(--text);font-family:var(--body);}
+  body{padding-bottom:60px;}
+  .topbar{position:sticky;top:0;z-index:10;background:linear-gradient(180deg,var(--bg) 75%,transparent);padding:16px 16px 10px;}
+  .brand{display:flex;align-items:baseline;gap:10px;}
+  .brand .mark{font-family:var(--display);font-weight:700;font-size:22px;letter-spacing:-.02em;}
+  .brand .sub{font-family:var(--mono);font-size:10.5px;color:var(--text-dim);}
+  main{padding:6px 14px 14px;max-width:820px;margin:0 auto;}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:3px;margin-bottom:12px;overflow:hidden;}
+  .card-head{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;cursor:pointer;user-select:none;}
+  .card-head .title{font-family:var(--display);font-weight:700;font-size:14px;}
+  .card-head .status{font-family:var(--mono);font-size:10px;color:var(--text-dim);text-transform:uppercase;}
+  .card-head .status.ok{color:var(--thawed);}
+  .card-head .status.err{color:var(--danger);}
+  .chev{font-family:var(--mono);color:var(--text-dim);font-size:12px;transition:transform .2s;}
+  .card.open .chev{transform:rotate(90deg);}
+  .card-body{display:none;padding:0 14px 14px;}
+  .card.open .card-body{display:block;}
+  p.help{color:var(--text-dim);font-size:12.5px;line-height:1.5;margin:0 0 10px;}
+  label{display:block;font-family:var(--mono);font-size:9.5px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;margin:8px 0 4px;}
+  input[type=text]{width:100%;background:var(--surface-2);border:1px solid var(--line);color:var(--text);font-family:var(--mono);font-size:12px;padding:8px 9px;border-radius:2px;}
+  input:focus{outline:2px solid var(--amber);outline-offset:1px;}
+  button.action{font-family:var(--display);font-weight:700;font-size:12.5px;background:var(--amber);color:#1a1408;border:none;border-radius:2px;padding:10px 14px;margin-top:10px;cursor:pointer;width:100%;}
+  button.action.small{width:auto;padding:7px 11px;font-size:11px;margin:4px 4px 0 0;display:inline-block;}
+  button.action:disabled{opacity:.35;cursor:not-allowed;}
+  .out{font-family:var(--mono);font-size:11px;white-space:pre-wrap;word-break:break-all;background:#0E0C08;border:1px solid var(--line);border-radius:2px;padding:9px;margin-top:8px;max-height:240px;overflow:auto;color:#C9BE9F;}
+  .out .r{color:var(--danger);}
+  .legend{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;font-family:var(--mono);font-size:10px;}
+  .legend span{padding:3px 7px;border-radius:2px;}
+  .badge{font-family:var(--mono);font-size:9px;padding:2px 5px;border-radius:2px;text-transform:uppercase;white-space:nowrap;display:inline-block;}
+  .badge.status-yes{background:#2f3d2a;color:#a9d68f;}
+  .badge.status-no{background:#3a1f1f;color:#d18888;}
+  .badge.status-unknown{background:#241a12;color:#d8b276;}
+  .summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin:0 0 16px;}
+  .summary-box{background:var(--surface-2);border:1px solid var(--line);border-radius:3px;padding:12px;text-align:center;}
+  .summary-count{font-family:var(--display);font-weight:700;font-size:22px;}
+  .summary-count.yes{color:var(--thawed);}
+  .summary-count.no{color:var(--danger);}
+  .summary-count.unknown{color:var(--amber);}
+  .summary-label{font-family:var(--mono);font-size:9px;color:var(--text-dim);text-transform:uppercase;margin-top:4px;}
+  .nft-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;}
+  .nft-card{background:var(--surface-2);border:1px solid var(--line);border-radius:4px;overflow:hidden;}
+  .nft-thumb{width:100%;aspect-ratio:1/1;object-fit:cover;background:var(--line);display:block;}
+  .nft-body{padding:8px;}
+  .nft-name{font-family:var(--display);font-weight:700;font-size:11px;color:var(--text);margin-bottom:6px;word-break:break-word;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .nft-reason{font-family:var(--mono);font-size:9.5px;color:var(--text-dim);line-height:1.4;margin-top:5px;}
+  .nft-mint{font-family:var(--mono);font-size:8px;color:var(--text-dim);word-break:break-all;opacity:.6;margin-top:5px;}
+  footer{text-align:center;color:var(--text-dim);font-family:var(--mono);font-size:10px;padding:16px 14px 0;}
+  footer a{color:var(--amber);}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">
+    <span class="mark">Comb</span>
+    <span class="sub">NFT Classifier — read-only</span>
+  </div>
+</div>
+
+<main>
+  <p class="help" style="margin-bottom:14px;">
+    Checks your wallet for frozen Honeyland NFTs and tells you which ones can be unstaked. This page only reads public
+    on-chain data — it never asks for a private key or wallet connection. To actually unfreeze anything, use the
+    <a href="index.html" style="color:var(--amber);">main Comb tool</a>.
+  </p>
+
+  <div class="card open" id="card-config">
+    <div class="card-head" onclick="toggleCard('card-config')"><span class="title">1 · Scan a wallet</span><span class="chev">▸</span></div>
+    <div class="card-body">
+      <label>RPC endpoint (Helius required for scanning)</label>
+      <input type="text" id="rpc" placeholder="https://mainnet.helius-rpc.com/?api-key=..." />
+      <p class="help" style="margin-top:4px;">
+        Don't have one? Free, takes under a minute:
+        <a href="https://www.helius.dev" target="_blank" rel="noopener" style="color:var(--amber);">helius.dev</a>
+        → sign up (email only, no card) → dashboard shows your RPC URL with the key already in it → copy the whole thing here.
+      </p>
+
+      <label style="margin-top:12px;">Wallet address</label>
+      <input type="text" id="wallet-input" placeholder="e.g. HZwfH3FhJLNk9fFRGEiKQx4SJ8qFfXbLDKYRx4oGxdT8" />
+
+      <button class="action" onclick="classify()">Scan wallet</button>
+      <div class="out" id="debug-log" style="display:none;"></div>
+    </div>
+  </div>
+
+  <div class="card" id="card-results">
+    <div class="card-head" onclick="toggleCard('card-results')"><span class="title">2 · Results</span><span class="status" id="status-results">not run</span></div>
+    <div class="card-body">
+      <div class="legend">
+        <span class="badge status-yes">recoverable</span>
+        <span class="badge status-no">not recoverable</span>
+        <span class="badge status-unknown">can't tell yet</span>
+      </div>
+
+      <div class="summary-grid" id="summary-grid" style="display:none;"></div>
+
+      <div class="nft-grid" id="nft-grid"></div>
+
+      <div id="export-row" style="display:none;">
+        <button class="action small" onclick="exportJSON()">Export as JSON</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  Client-side only, no data leaves your browser. Recoverable? Head to the <a href="index.html">main Comb tool</a> to unfreeze.
+</footer>
+
+<script src="https://unpkg.com/@solana/web3.js@1.95.3/lib/index.iife.js"></script>
+<script>
+const PROGRAM_LEGACY_ID = "D7scofMhczWugX7WZPXSP3YjjSyDijEULpwQdraVj54q";
+const METADATA_PROGRAM_ID = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
+const POOL_CORE = "4YSH4QNLjdpbDNWz6eJmT3J8kATvAWTrRMwpfE9zCDff";
+const ACTIONABLE = ['core_recoverable', 'core_asset_known_pool'];
+
+// Tiny inline placeholder shown when an NFT has no resolvable image.
+const PLACEHOLDER_IMG = 'data:image/svg+xml;utf8,' + encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#34301F"/><text x="50" y="56" font-size="34" text-anchor="middle" fill="#948A73" font-family="monospace">?</text></svg>'
+);
+
+let classificationResults = [];
+
+function toggleCard(id) { document.getElementById(id).classList.toggle('open'); }
+function setStatus(id, text, cls) { const el = document.getElementById(id); el.textContent = text; el.className = 'status' + (cls ? ' ' + cls : ''); }
+function log(id, html, append) { const el = document.getElementById(id); el.style.display = 'block'; el.innerHTML = append ? el.innerHTML + html : html; el.scrollTop = el.scrollHeight; }
+
+async function rpc(method, params) {
+  const url = document.getElementById('rpc').value.trim();
+  if (!url) throw new Error('Set an RPC endpoint first.');
+  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+  const json = await res.json();
+  if (json.error) throw new Error(JSON.stringify(json.error));
+  return json.result;
+}
+
+function imageFor(asset) {
+  return asset.content?.links?.image || asset.content?.files?.[0]?.cdn_uri || asset.content?.files?.[0]?.uri || PLACEHOLDER_IMG;
+}
+
+// Same question every user actually has: can this specific NFT be unstaked?
+function displayStatus(category) {
+  if (ACTIONABLE.includes(category)) return { label: 'recoverable', cls: 'status-yes', bucket: 'yes' };
+  if (category === 'legacy_dead') return { label: 'not recoverable', cls: 'status-no', bucket: 'no' };
+  return { label: "can't tell yet", cls: 'status-unknown', bucket: 'unknown' };
+}
+
+function reasonFor(category) {
+  switch (category) {
+    case 'core_recoverable':
+      return 'Classic Honeyland NFT held by the live program — can unfreeze now.';
+    case 'core_asset_known_pool':
+      return 'Generations NFT in the known active staking pool — can unfreeze now.';
+    case 'legacy_dead':
+      return "Frozen by Honeyland's old staking program, which has been deleted on-chain. No instruction exists that can unfreeze this — confirmed permanent.";
+    case 'core_asset_other_pool':
+      return "Frozen by a pool this tool doesn't recognize. Could be a legitimate different pool, or just not classified yet — not confirmed permanent.";
+    case 'compressed':
+      return "Compressed NFT — these freeze/unfreeze differently and aren't supported by this tool yet.";
+    default:
+      return "Couldn't work out why this is frozen — often a temporary rate-limit hiccup. Try rescanning.";
+  }
+}
+
+async function classifyNFT(asset) {
+  const mint = asset.id;
+  const name = asset.content?.metadata?.name || mint.slice(0, 8);
+  const image = imageFor(asset);
+
+  if (asset.interface === 'MplCoreAsset') {
+    const authority = asset.plugins?.freeze_delegate?.authority?.address;
+    const collection = (asset.grouping || []).find(g => g.group_key === 'collection')?.group_value;
+
+    if (authority === POOL_CORE) {
+      return { mint, name, image, category: 'core_asset_known_pool', collection };
+    }
+
+    // Not the known pool - but that doesn't mean it's alive. Check who actually
+    // owns that authority account before assuming it's an unclassified unknown.
+    try {
+      const authInfo = await rpc('getMultipleAccounts', [[authority], { encoding: 'base64' }]);
+      const authOwner = authInfo.value[0]?.owner;
+      if (authOwner === PROGRAM_LEGACY_ID) {
+        return { mint, name, image, category: 'legacy_dead', collection };
+      }
+      return { mint, name, image, category: 'core_asset_other_pool', collection, poolOwner: authOwner };
+    } catch (err) {
+      return { mint, name, image, category: 'core_asset_other_pool', collection, error: err.message };
+    }
+  }
+
+  if (asset.compression?.compressed === true) {
+    return { mint, name, image, category: 'compressed' };
+  }
+
+  if (asset.token_info?.associated_token_address) {
+    const tokenAccount = asset.token_info.associated_token_address;
+    try {
+      const tokenInfo = await rpc('getMultipleAccounts', [[tokenAccount], { encoding: 'jsonParsed' }]);
+      const delegate = tokenInfo.value[0]?.data?.parsed?.info?.delegate;
+      if (!delegate) return { mint, name, image, category: 'unclassified', tokenAccount };
+
+      const delegateInfo = await rpc('getMultipleAccounts', [[delegate], { encoding: 'base64' }]);
+      const owner = delegateInfo.value[0]?.owner;
+
+      if (owner === METADATA_PROGRAM_ID) return { mint, name, image, category: 'core_recoverable', tokenAccount, delegate };
+      if (owner === PROGRAM_LEGACY_ID) return { mint, name, image, category: 'legacy_dead', tokenAccount, delegate };
+      return { mint, name, image, category: 'unclassified', tokenAccount, delegate, delegateOwner: owner };
+    } catch (err) {
+      return { mint, name, image, category: 'unclassified', tokenAccount, error: err.message };
+    }
+  }
+
+  return { mint, name, image, category: 'unclassified' };
+}
+
+async function classify() {
+  const wallet = document.getElementById('wallet-input').value.trim();
+  if (!wallet) {
+    setStatus('status-results', 'error', 'err');
+    log('debug-log', '<span class="r">Enter a wallet address first.</span>', false);
+    return;
+  }
+
+  setStatus('status-results', 'scanning...');
+  log('debug-log', 'Fetching assets...\n', false);
+  document.getElementById('summary-grid').style.display = 'none';
+  document.getElementById('export-row').style.display = 'none';
+  document.getElementById('nft-grid').innerHTML = '';
+
+  try {
+    let assets = [], page = 1;
+    while (true) {
+      const result = await rpc('getAssetsByOwner', { ownerAddress: wallet, page, limit: 1000 });
+      assets.push(...(result.items || []));
+      log('debug-log', '.', true);
+      if ((result.items || []).length < 1000) break;
+      page++;
+    }
+
+    const frozen = assets.filter(a => a.ownership?.frozen === true);
+    log('debug-log', `\nFound ${frozen.length} frozen NFTs out of ${assets.length} total. Classifying...\n`, true);
+
+    classificationResults = [];
+    for (const asset of frozen) {
+      try {
+        classificationResults.push(await classifyNFT(asset));
+      } catch (err) {
+        log('debug-log', `<span class="r">Error classifying ${asset.id.slice(0,8)}: ${err.message}</span>\n`, true);
+      }
+    }
+
+    renderResults();
+    setStatus('status-results', `${classificationResults.length} found`, 'ok');
+    document.getElementById('card-results').classList.add('open');
+  } catch (err) {
+    log('debug-log', `<span class="r">Error: ${err.message}</span>`, true);
+    setStatus('status-results', 'error', 'err');
+  }
+}
+
+function renderResults() {
+  const buckets = { yes: 0, no: 0, unknown: 0 };
+  classificationResults.forEach(r => buckets[displayStatus(r.category).bucket]++);
+
+  document.getElementById('summary-grid').style.display = 'grid';
+  document.getElementById('summary-grid').innerHTML = `
+    <div class="summary-box"><div class="summary-count yes">${buckets.yes}</div><div class="summary-label">recoverable</div></div>
+    <div class="summary-box"><div class="summary-count no">${buckets.no}</div><div class="summary-label">not recoverable</div></div>
+    <div class="summary-box"><div class="summary-count unknown">${buckets.unknown}</div><div class="summary-label">can't tell yet</div></div>
+  `;
+
+  const grid = document.getElementById('nft-grid');
+  grid.innerHTML = classificationResults.map(r => {
+    const { label, cls } = displayStatus(r.category);
+    return `
+      <div class="nft-card">
+        <img class="nft-thumb" src="${r.image}" loading="lazy" onerror="this.onerror=null;this.src='${PLACEHOLDER_IMG}';" alt="">
+        <div class="nft-body">
+          <div class="nft-name">${r.name}</div>
+          <span class="badge ${cls}">${label}</span>
+          <div class="nft-reason">${reasonFor(r.category)}</div>
+          <div class="nft-mint">${r.mint}</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  document.getElementById('export-row').style.display = classificationResults.length ? 'block' : 'none';
+}
+
+function exportJSON() {
+  const json = JSON.stringify(classificationResults, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `honeyland-classification-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+}
+</script>
+</body>
+</html>
