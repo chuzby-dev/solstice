@@ -1,0 +1,11 @@
+/index.html
+  Cache-Control: no-cache, must-revalidate
+
+/classifier.html
+  Cache-Control: no-cache, must-revalidate
+
+/sw.js
+  Cache-Control: no-cache, must-revalidate
+
+/
+  Cache-Control: no-cache, must-revalidate
