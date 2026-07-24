@@ -58,12 +58,10 @@
   .nft-table tr.selected{background:var(--surface-2);}
   .nft-table tr.disabled-row{opacity:.45;}
   .badge{font-family:var(--mono);font-size:9px;padding:2px 5px;border-radius:2px;text-transform:uppercase;white-space:nowrap;}
-  .badge.core_recoverable{background:var(--amber-dim);color:#f0c98a;}
-  .badge.core_asset_known_pool{background:#2f3d2a;color:#a9d68f;}
-  .badge.legacy_dead{background:#3a1f1f;color:#d18888;}
-  .badge.core_asset_other_pool{background:#2a2440;color:#b3a7e8;}
-  .badge.compressed{background:var(--line);color:var(--text-dim);}
-  .badge.unclassified{background:var(--line);color:var(--text-dim);}
+  .badge.status-yes{background:#2f3d2a;color:#a9d68f;}
+  .badge.status-no{background:#3a1f1f;color:#d18888;}
+  .badge.status-unknown{background:#241a12;color:#d8b276;}
+  .row-reason{display:block;color:var(--text-dim);font-size:10px;margin-top:2px;line-height:1.4;}
   .row-status{font-family:var(--mono);font-size:10px;color:var(--text-dim);}
   .row-status.sent{color:var(--thawed);}
   .row-status.error{color:var(--danger);}
@@ -131,22 +129,18 @@
     <div class="card-head" onclick="toggleCard('card-list')"><span class="title">3 · Select &amp; unfreeze</span><span class="status" id="status-list"></span></div>
     <div class="card-body">
       <div class="legend">
-        <span class="badge core_recoverable">core</span>
-        <span class="badge core_asset_known_pool">generations</span>
-        <span class="badge legacy_dead">dead (no action)</span>
-        <span class="badge core_asset_other_pool">unidentified</span>
-        <span class="badge compressed">compressed (unsupported)</span>
+        <span class="badge status-yes">recoverable</span>
+        <span class="badge status-no">not recoverable</span>
+        <span class="badge status-unknown">can't tell yet</span>
       </div>
       <div class="toolbar">
         <button class="action small" onclick="selectAllActionable()">Select all recoverable</button>
         <button class="action small" onclick="selectAll(false)">Select none</button>
-        <button class="action small" onclick="selectByCategory('core_recoverable')">All Core</button>
-        <button class="action small" onclick="selectByCategory('core_asset_known_pool')">All Generations</button>
         <span class="count-pill" id="count-pill">0 selected</span>
       </div>
       <div class="table-wrap">
         <table class="nft-table">
-          <thead><tr><th></th><th>Name</th><th>Category</th><th>Status</th></tr></thead>
+          <thead><tr><th></th><th>Name</th><th>Can it be unstaked?</th><th>Status</th></tr></thead>
           <tbody id="nft-tbody"></tbody>
         </table>
       </div>
@@ -406,18 +400,47 @@ async function scanWallet(){
 
 const ACTIONABLE = ['core_recoverable', 'core_asset_known_pool'];
 
+// Maps the technical classification to the one question people actually
+// ask: can this specific NFT be unstaked, right now, by this tool?
+function displayStatus(category){
+  if(ACTIONABLE.includes(category)) return { label: 'recoverable', cls: 'status-yes' };
+  if(category === 'legacy_dead') return { label: 'not recoverable', cls: 'status-no' };
+  return { label: "can't tell yet", cls: 'status-unknown' };
+}
+
+function reasonFor(category){
+  switch(category){
+    case 'core_recoverable':
+      return 'Classic Honeyland NFT held by the live program — can unfreeze now.';
+    case 'core_asset_known_pool':
+      return 'Generations NFT in the known active staking pool — can unfreeze now.';
+    case 'legacy_dead':
+      return "Frozen by Honeyland's old staking program, which has been deleted on-chain. No instruction exists that can unfreeze this — confirmed permanent, not fixable by any tool.";
+    case 'core_asset_other_pool':
+      return "Frozen by a pool this tool doesn't recognize. Could be a legitimate different pool, or just not classified yet — not confirmed permanent.";
+    case 'compressed':
+      return "Compressed NFT — these freeze/unfreeze differently and this tool doesn't support them yet.";
+    default:
+      return "Couldn't work out why this is frozen — often a temporary rate-limit hiccup. Try rescanning; if it still shows this, the wallet's delegate doesn't match a pattern this tool recognizes.";
+  }
+}
+
 function renderTable(){
   const tbody = document.getElementById('nft-tbody');
   tbody.innerHTML='';
   state.items.forEach(item => {
     const actionable = ACTIONABLE.includes(item.category);
+    const { label, cls } = displayStatus(item.category);
     const tr = document.createElement('tr');
     tr.id = 'row-'+item.id;
     if(!actionable) tr.classList.add('disabled-row');
     tr.innerHTML = `
       <td><input type="checkbox" onchange="toggleSelect(${item.id})" ${item.selected?'checked':''} ${actionable?'':'disabled'}></td>
       <td>${item.name}</td>
-      <td><span class="badge ${item.category}">${item.category.replace(/_/g,' ')}</span></td>
+      <td>
+        <span class="badge ${cls}">${label}</span>
+        <span class="row-reason">${reasonFor(item.category)}</span>
+      </td>
       <td class="row-status" id="rowstatus-${item.id}">${item.status}</td>
     `;
     tbody.appendChild(tr);
@@ -427,7 +450,6 @@ function renderTable(){
 function toggleSelect(id){ const item = state.items.find(i=>i.id===id); item.selected = !item.selected; document.getElementById('row-'+id).classList.toggle('selected', item.selected); updateCount(); }
 function selectAll(val){ state.items.forEach(i => { if(ACTIONABLE.includes(i.category)) i.selected = val; }); renderTable(); }
 function selectAllActionable(){ selectAll(true); }
-function selectByCategory(category){ state.items.forEach(i => { i.selected = i.category === category; }); renderTable(); }
 function updateCount(){
   const n = state.items.filter(i=>i.selected).length;
   document.getElementById('count-pill').textContent = `${n} selected`;
